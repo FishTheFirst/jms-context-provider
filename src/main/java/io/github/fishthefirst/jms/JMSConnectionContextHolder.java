@@ -1,6 +1,6 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.JMSContextWrapperProvider;
+import io.github.fishthefirst.contextproviders.JMSContextWrapperSupplier;
 import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import jakarta.jms.ConnectionFactory;
 import jakarta.jms.ExceptionListener;
@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Objects;
 
 @Slf4j
-public final class JMSMainContextHolder implements JMSContextWrapperProvider, ExceptionListener {
+public final class JMSConnectionContextHolder implements JMSContextWrapperSupplier, ExceptionListener {
     private JMSContext context;
     private final List<JMSContextWrapper> providedContexts = new ArrayList<>();
     private String clientId;
@@ -25,7 +25,7 @@ public final class JMSMainContextHolder implements JMSContextWrapperProvider, Ex
     private final int sessionMode;
     private final ConnectionFactory connectionFactory;
 
-    JMSMainContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
+    JMSConnectionContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
         Objects.requireNonNull(connectionFactory, "Connection factory cannot be null");
         this.connectionFactory = connectionFactory;
         this.sessionMode = sessionMode;
@@ -87,11 +87,6 @@ public final class JMSMainContextHolder implements JMSContextWrapperProvider, Ex
     @Override
     public synchronized void close() {
         if(Objects.nonNull(context)) {
-            try {
-                context.stop();
-            } catch (Exception e2) {
-                log.error("", e2);
-            }
             try {
                 providedContexts.forEach(c->c.getContext().close());
                 context.close();

@@ -1,9 +1,8 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.JMSContextProvider;
-import io.github.fishthefirst.contextproviders.JMSContextWrapperProvider;
+import io.github.fishthefirst.contextproviders.JMSContextSupplier;
+import io.github.fishthefirst.contextproviders.JMSContextWrapperSupplier;
 import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
-import jakarta.jms.ConnectionFactory;
 import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
@@ -12,12 +11,12 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.Objects;
 
 @Slf4j
-public final class JMSSecondaryContextHolder implements JMSContextProvider, ExceptionListener {
+public final class JMSSessionContextSupplier implements JMSContextSupplier, ExceptionListener {
     private JMSContext context;
     private final int sessionMode;
-    private final JMSContextWrapperProvider contextProvider;
+    private final JMSContextWrapperSupplier contextProvider;
 
-    JMSSecondaryContextHolder(JMSContextWrapperProvider contextProvider, int sessionMode) {
+    JMSSessionContextSupplier(JMSContextWrapperSupplier contextProvider, int sessionMode) {
         Objects.requireNonNull(contextProvider, "Connection factory cannot be null");
         this.contextProvider = contextProvider;
         this.sessionMode = sessionMode;

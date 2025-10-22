@@ -1,12 +1,11 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.data.MessageWithMetadata;
-import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextProvider;
+import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextSupplier;
 import io.github.fishthefirst.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.handlers.ConsumerVoidEventHandler;
 import io.github.fishthefirst.handlers.MessageCallback;
 import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
-import jakarta.jms.JMSConsumer;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
 import jakarta.jms.JMSRuntimeException;
@@ -15,18 +14,16 @@ import jakarta.jms.TextMessage;
 import jakarta.jms.Topic;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.util.Strings;
-import org.apache.logging.log4j.util.Supplier;
 
 import java.io.EOFException;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
-public final class JMSConsumerHolder implements Runnable, AutoCloseable {
-    private final FixedSessionModeJMSContextProvider contextProvider;
+public final class JMSConsumer implements Runnable, AutoCloseable {
+    private final FixedSessionModeJMSContextSupplier contextProvider;
     private final Set<ConsumerStringEventHandler> onUnmarshallFailEventHandlers = new HashSet<>();
     private final Set<ConsumerVoidEventHandler> onReadFailEventHandlers = new HashSet<>();
     private final Set<ConsumerVoidEventHandler> onReadTimeoutEventHandlers = new HashSet<>();
@@ -34,15 +31,15 @@ public final class JMSConsumerHolder implements Runnable, AutoCloseable {
     private final StringToMessageUnmarshaller stringToMessageUnmarshaller;
     private final String destinationName;
     private final boolean topic;
-    private JMSConsumer consumer;
+    private jakarta.jms.JMSConsumer consumer;
     private String selector;
     private String consumerName;
 
-    JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
+    JMSConsumer(FixedSessionModeJMSContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
         this(contextProvider, messageCallback, stringToMessageUnmarshaller, destinationName, topic, null, consumerName);
     }
 
-    JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
+    JMSConsumer(FixedSessionModeJMSContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToMessageUnmarshaller, "Unmarshaller cannot be null");

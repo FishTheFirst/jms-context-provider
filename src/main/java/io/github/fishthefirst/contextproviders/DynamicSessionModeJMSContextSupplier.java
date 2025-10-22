@@ -4,5 +4,5 @@ import jakarta.jms.JMSContext;
 
 import java.util.function.Function;
 
-public interface DynamicSessionModeJMSContextProvider extends Function<Integer, JMSContext> {
+public interface DynamicSessionModeJMSContextSupplier extends Function<Integer, JMSContext> {
 }

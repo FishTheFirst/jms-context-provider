@@ -4,9 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.jackson.MessageWithMetadataJacksonMixInConfigurator;
-import io.github.fishthefirst.jms.JMSConsumerHolder;
-import io.github.fishthefirst.jms.JMSFactory;
-import io.github.fishthefirst.jms.JMSMainContextHolder;
+import io.github.fishthefirst.jms.JMSConsumer;
+import io.github.fishthefirst.jms.JMSContextAwareComponentFactory;
+import io.github.fishthefirst.jms.JMSConnectionContextHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.activemq.ActiveMQConnectionFactory;
 
@@ -21,16 +21,16 @@ import static org.apache.activemq.ActiveMQSession.INDIVIDUAL_ACKNOWLEDGE;
 // click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 @Slf4j
 public class Main {
-    static JMSConsumerHolder consumer;
+    static JMSConsumer consumer;
     public static void main(String[] args) throws InterruptedException {
         ActiveMQConnectionFactory activeMQConnectionFactory = new ActiveMQConnectionFactory("admin", "admin", "tcp://localhost:62616");
-        JMSMainContextHolder contextHolder = JMSFactory.createContextHolder(activeMQConnectionFactory, INDIVIDUAL_ACKNOWLEDGE);
+        JMSConnectionContextHolder contextHolder = JMSContextAwareComponentFactory.createContextHolder(activeMQConnectionFactory, INDIVIDUAL_ACKNOWLEDGE);
 
         contextHolder.setClientId("clientId");
         ExecutorService executorService = Executors.newFixedThreadPool(8);
         ObjectMapper objectMapper = new ObjectMapper();
         MessageWithMetadataJacksonMixInConfigurator.configureMixIn(objectMapper);
-        consumer = JMSFactory.createConsumer(contextHolder, Main::acceptMessage, (s) -> {
+        consumer = JMSContextAwareComponentFactory.createConsumer(contextHolder, Main::acceptMessage, (s) -> {
             try {
                 return objectMapper.readValue(s, MessageWithMetadata.class);
             } catch (JsonProcessingException e) {
@@ -51,7 +51,7 @@ public class Main {
             try{consumer.run();} catch (RuntimeException ie) {if(ie.getCause() instanceof InterruptedException) return;}}
         });
 
-        JMSConsumerHolder consumer2 = JMSFactory.createConsumer(contextHolder, Main::acceptMessage, (s) -> {
+        JMSConsumer consumer2 = JMSContextAwareComponentFactory.createConsumer(contextHolder, Main::acceptMessage, (s) -> {
             try {
                 return objectMapper.readValue(s, MessageWithMetadata.class);
             } catch (JsonProcessingException e) {
