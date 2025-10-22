@@ -12,12 +12,12 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.Objects;
 
 @Slf4j
-public class JMSSecondaryContextHolder implements JMSContextProvider, ExceptionListener {
+public final class JMSSecondaryContextHolder implements JMSContextProvider, ExceptionListener {
     private JMSContext context;
     private final int sessionMode;
     private final JMSContextWrapperProvider contextProvider;
 
-    public JMSSecondaryContextHolder(JMSContextWrapperProvider contextProvider, int sessionMode) {
+    JMSSecondaryContextHolder(JMSContextWrapperProvider contextProvider, int sessionMode) {
         Objects.requireNonNull(contextProvider, "Connection factory cannot be null");
         this.contextProvider = contextProvider;
         this.sessionMode = sessionMode;

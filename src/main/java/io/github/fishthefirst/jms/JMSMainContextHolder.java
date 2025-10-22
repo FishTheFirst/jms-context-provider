@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Objects;
 
 @Slf4j
-public class JMSMainContextHolder implements JMSContextWrapperProvider, ExceptionListener {
+public final class JMSMainContextHolder implements JMSContextWrapperProvider, ExceptionListener {
     private JMSContext context;
     private final List<JMSContextWrapper> providedContexts = new ArrayList<>();
     private String clientId;
@@ -25,7 +25,7 @@ public class JMSMainContextHolder implements JMSContextWrapperProvider, Exceptio
     private final int sessionMode;
     private final ConnectionFactory connectionFactory;
 
-    public JMSMainContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
+    JMSMainContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
         Objects.requireNonNull(connectionFactory, "Connection factory cannot be null");
         this.connectionFactory = connectionFactory;
         this.sessionMode = sessionMode;
@@ -53,7 +53,7 @@ public class JMSMainContextHolder implements JMSContextWrapperProvider, Exceptio
                 log.info("Main Context built with client ID {}", clientId);
             }
             else {
-                log.info("Main Context built");
+                log.warn("Main Context built without client ID");
             }
         } catch (Exception e) {
             context = null;

@@ -4,7 +4,10 @@ import io.github.fishthefirst.handlers.MessageCallback;
 import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
 import jakarta.jms.ConnectionFactory;
 
-public class JMSFactory {
+public final class JMSFactory {
+
+    private JMSFactory(){}
+
     public static JMSMainContextHolder createContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
         return new JMSMainContextHolder(connectionFactory, sessionMode);
     }

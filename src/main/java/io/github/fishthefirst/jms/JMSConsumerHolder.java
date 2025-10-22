@@ -25,7 +25,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
-public class JMSConsumerHolder implements Runnable, AutoCloseable {
+public final class JMSConsumerHolder implements Runnable, AutoCloseable {
     private final FixedSessionModeJMSContextProvider contextProvider;
     private final Set<ConsumerStringEventHandler> onUnmarshallFailEventHandlers = new HashSet<>();
     private final Set<ConsumerVoidEventHandler> onReadFailEventHandlers = new HashSet<>();
@@ -38,11 +38,11 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
     private String selector;
     private String consumerName;
 
-    public JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
+    JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
         this(contextProvider, messageCallback, stringToMessageUnmarshaller, destinationName, topic, null, consumerName);
     }
 
-    public JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
+    JMSConsumerHolder(FixedSessionModeJMSContextProvider contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToMessageUnmarshaller, "Unmarshaller cannot be null");

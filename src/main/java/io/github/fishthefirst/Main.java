@@ -7,11 +7,9 @@ import io.github.fishthefirst.jackson.MessageWithMetadataJacksonMixInConfigurato
 import io.github.fishthefirst.jms.JMSConsumerHolder;
 import io.github.fishthefirst.jms.JMSFactory;
 import io.github.fishthefirst.jms.JMSMainContextHolder;
-import jakarta.jms.JMSConsumer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.activemq.ActiveMQConnectionFactory;
 
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -24,9 +22,10 @@ import static org.apache.activemq.ActiveMQSession.INDIVIDUAL_ACKNOWLEDGE;
 @Slf4j
 public class Main {
     static JMSConsumerHolder consumer;
-    public static void main(String[] args) throws ExecutionException, InterruptedException {
+    public static void main(String[] args) throws InterruptedException {
         ActiveMQConnectionFactory activeMQConnectionFactory = new ActiveMQConnectionFactory("admin", "admin", "tcp://localhost:62616");
         JMSMainContextHolder contextHolder = JMSFactory.createContextHolder(activeMQConnectionFactory, INDIVIDUAL_ACKNOWLEDGE);
+
         contextHolder.setClientId("clientId");
         ExecutorService executorService = Executors.newFixedThreadPool(8);
         ObjectMapper objectMapper = new ObjectMapper();
