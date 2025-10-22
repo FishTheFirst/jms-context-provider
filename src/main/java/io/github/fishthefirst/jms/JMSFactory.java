@@ -9,12 +9,12 @@ public class JMSFactory {
         return new JMSMainContextHolder(connectionFactory, sessionMode);
     }
 
-    public static JMSConsumerHolder createConsumer(JMSMainContextHolder connectionFactory,
+    public static JMSConsumerHolder createConsumer(JMSMainContextHolder mainContextHolder,
                                                    MessageCallback messageCallback,
                                                    StringToMessageUnmarshaller stringToMessageUnmarshaller,
                                                    String destinationName,
                                                    boolean topic,
                                                    String consumerName) {
-        return new JMSConsumerHolder(connectionFactory::createContext, messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
+        return new JMSConsumerHolder(new JMSSecondaryContextHolder(mainContextHolder, mainContextHolder.getSessionMode())::createContext, messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
     }
 }

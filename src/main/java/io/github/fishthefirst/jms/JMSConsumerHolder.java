@@ -15,17 +15,18 @@ import jakarta.jms.TextMessage;
 import jakarta.jms.Topic;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.util.Strings;
+import org.apache.logging.log4j.util.Supplier;
 
 import java.io.EOFException;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public class JMSConsumerHolder implements Runnable, AutoCloseable {
     private final FixedSessionModeJMSContextProvider contextProvider;
-    private JMSContext context;
     private final Set<ConsumerStringEventHandler> onUnmarshallFailEventHandlers = new HashSet<>();
     private final Set<ConsumerVoidEventHandler> onReadFailEventHandlers = new HashSet<>();
     private final Set<ConsumerVoidEventHandler> onReadTimeoutEventHandlers = new HashSet<>();
@@ -55,7 +56,7 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
         this.destinationName = destinationName;
         this.topic = topic;
         this.consumerName = consumerName;
-        tryCreateConsumer();
+        //tryCreateConsumer();
     }
 
     public void setSelector(String selector) {
@@ -79,24 +80,9 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
 
     @Override
     public void close() {
-        if (Objects.nonNull(context)) {
-            try {
-                context.stop();
-            } catch (Exception ignored) {
-
-            }
-            if (Objects.nonNull(consumer)) {
-                consumer.close();
-                consumer = null;
-            }
-            try {
-                context.close();
-            } catch (Exception ignored) {
-
-            } finally {
-                context = null;
-            }
-
+        if (Objects.nonNull(consumer)) {
+            consumer.close();
+            consumer = null;
             log.info("Consumer {} closed", consumerName);
         }
     }
@@ -125,9 +111,8 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
         onUnmarshallFailEventHandlers.forEach(c -> tryCatch(string, c));
     }
 
-    private void createConsumer() {
-        if (Objects.nonNull(consumer)) consumer.close();
-        consumer = null;
+    private void createConsumer(JMSContext context) {
+        if (Objects.nonNull(consumer)) close();
         context = Objects.requireNonNullElse(context, Objects.requireNonNull(contextProvider.get(), "Context provider returned null. Exception thrown to bail out."));
         if (!topic) {
             if (Objects.nonNull(selector))
@@ -158,7 +143,7 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
 
     private void tryCreateConsumer() {
         try {
-            createConsumer();
+            createConsumer(contextProvider.get());
         } catch (Exception e) {
             close();
             //log.error("", e);
@@ -193,24 +178,36 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
         }
     }
 
+    private static void doIf(boolean b, Runnable t, Runnable f) {
+        if (b) {
+            t.run();
+        } else {
+            f.run();
+        }
+    }
+
     @Override
     public synchronized void run() {
+        JMSContext context = null;
         try {
+            context = contextProvider.get();
             log.info("Consumer {} run", consumerName);
             if (Objects.isNull(consumer)) {
-                createConsumer();
+                createConsumer(context);
             }
             Optional.ofNullable((TextMessage) consumer.receive(10000L))
                     .ifPresentOrElse(this::handleMessage, this::onReadTimeout);
-            if(context.getTransacted())
+            if (context.getTransacted()) {
                 context.commit();
+            }
         } catch (JMSRuntimeException exception) {
             Throwable realException = exception.getCause();
-            if (realException instanceof JMSException jmse)
+            if (realException instanceof JMSException jmse) {
                 realException = jmse.getLinkedException();
+            }
             if (realException instanceof InterruptedException ie) {
                 log.warn("Consumer {} exited from InterruptException", consumerName);
-                return;
+                throw new RuntimeException(ie);
             }
             if (realException instanceof EOFException eof) {
                 tryCreateConsumer();
@@ -218,14 +215,15 @@ public class JMSConsumerHolder implements Runnable, AutoCloseable {
             log.error("Consumer {} exception", consumerName);
             log.error("", realException);
             onReadFail();
-            if (Objects.nonNull(context))
+            Optional.ofNullable(context).ifPresent(c -> {
                 try {
-                    context.recover();
+                    doIf(c.getTransacted(), c::recover, c::rollback);
                 } catch (JMSRuntimeException e) {
-                    //log.error("Consumer {} exception", consumerName, e);
+                    log.error("Consumer {} exception", consumerName, e);
                 }
+            });
         } catch (Exception e) {
-            //log.error("Consumer {} exception", consumerName, e);
+            log.error("Consumer {} exception", consumerName, e);
         }
     }
 }
