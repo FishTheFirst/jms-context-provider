@@ -1,4 +1,4 @@
-package io.github.fishthefirst;
+package io.github.fishthefirst.handlers;
 
 import java.util.function.Consumer;
 
