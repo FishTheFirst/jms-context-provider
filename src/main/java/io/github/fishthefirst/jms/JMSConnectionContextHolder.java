@@ -1,7 +1,5 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.DynamicSessionModeJMSContextWrapperSupplier;
-import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import jakarta.jms.ConnectionFactory;
 import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSContext;
@@ -15,17 +13,19 @@ import java.util.Objects;
 import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
 @Slf4j
-public final class JMSConnectionContextHolder implements DynamicSessionModeJMSContextWrapperSupplier, ExceptionListener, AutoCloseable {
-    private JMSContext context;
+public final class JMSConnectionContextHolder implements AutoCloseable {
+    // Final vars
     private final List<JMSContextWrapper> providedContexts = new ArrayList<>();
-    private String clientId;
 
-    public int getSessionMode() {
-        return sessionMode;
-    }
-
+    // Constructor vars
     private final int sessionMode;
     private final ConnectionFactory connectionFactory;
+
+    // JMS
+    private JMSContext context;
+
+    // User props
+    private String clientId;
 
     JMSConnectionContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
         Objects.requireNonNull(connectionFactory, "Connection factory cannot be null");
@@ -33,23 +33,52 @@ public final class JMSConnectionContextHolder implements DynamicSessionModeJMSCo
         this.sessionMode = sessionMode;
     }
 
-    public synchronized JMSContextWrapper createContext(int sessionMode) {
+    // User props setters
+    public synchronized void setClientId(String clientId) {
+        this.clientId = clientId;
+        if(Objects.nonNull(context))
+            onException(new JMSException("Client ID Changed", "", new Exception("Client ID Changed")));
+
+    }
+
+    // Context Controls
+    @Override
+    public synchronized void close() {
+
+
+        if(Objects.nonNull(context)) {
+            tryAndLogError(context::close);
+        }
+        context = null;
+        List<JMSContextWrapper> copy = List.copyOf(providedContexts);
+        providedContexts.clear();
+        for (JMSContextWrapper providedContext : copy) {
+            tryAndLogError(() -> providedContext.onException(new JMSException("Connection closing")));
+        }
+    }
+
+    // JMS Context Methods
+    int getSessionMode() {
+        return sessionMode;
+    }
+
+    synchronized JMSContextWrapper createContext(int sessionMode, ExceptionListener exceptionListener) {
         if (Objects.isNull(context)) {
             buildAndAssignContext();
         }
-        JMSContextWrapper jmsContextWrapper = new JMSContextWrapper(context.createContext(sessionMode));
+        JMSContextWrapper jmsContextWrapper = new JMSContextWrapper(context.createContext(sessionMode), exceptionListener);
         providedContexts.add(jmsContextWrapper);
         return jmsContextWrapper;
     }
 
-    private synchronized void buildAndAssignContext() {
+    private void buildAndAssignContext() {
         try {
             // This protects connection factory methods from blowing up from multiple connection holders
             synchronized (connectionFactory) {
                 context = connectionFactory.createContext(sessionMode);
             }
             context.setClientID(clientId);
-            context.setExceptionListener(this);
+            context.setExceptionListener(this::onException);
             if(Objects.nonNull(clientId)) {
                 log.info("Connection Context built with client ID {}", clientId);
             }
@@ -64,32 +93,10 @@ public final class JMSConnectionContextHolder implements DynamicSessionModeJMSCo
         }
     }
 
-    @Override
-    public synchronized void onException(JMSException exception) {
+    private synchronized void onException(JMSException exception) {
         log.error("Connection Context expired: {}", exception.getMessage());
         List<JMSContextWrapper> copyOfWrappers = List.copyOf(providedContexts);
         close();
-        tryAndLogError(this::buildAndAssignContext);
-        providedContexts.clear();
         copyOfWrappers.forEach(jmsContextWrapper -> jmsContextWrapper.onException(exception));
-    }
-
-    public synchronized void setClientId(String clientId) {
-        this.clientId = clientId;
-        if(Objects.nonNull(context))
-            onException(new JMSException("Client ID Changed", "", new Exception("Client ID Changed")));
-
-    }
-
-    @Override
-    public synchronized void close() {
-        if(Objects.nonNull(context)) {
-            for (JMSContextWrapper providedContext : providedContexts) {
-                tryAndLogError(providedContext.getContext()::close);
-            }
-            tryAndLogError(context::close);
-        }
-        providedContexts.clear();
-        context = null;
     }
 }

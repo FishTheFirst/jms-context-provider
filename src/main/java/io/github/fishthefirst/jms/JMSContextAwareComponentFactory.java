@@ -20,4 +20,14 @@ public final class JMSContextAwareComponentFactory {
                                              String consumerName) {
         return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, mainContextHolder.getSessionMode()), messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
     }
+
+    public static JMSConsumer createConsumer(JMSConnectionContextHolder mainContextHolder,
+                                             MessageCallback messageCallback,
+                                             StringToMessageUnmarshaller stringToMessageUnmarshaller,
+                                             String destinationName,
+                                             boolean topic,
+                                             String consumerName,
+                                             int sessionMode) {
+        return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
+    }
 }

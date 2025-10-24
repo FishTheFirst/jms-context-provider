@@ -1,41 +1,37 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.DynamicSessionModeJMSContextWrapperSupplier;
-import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextWrapperSupplier;
-import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Objects;
 
-import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
-
 @Slf4j
-public final class JMSSessionContextSupplier implements FixedSessionModeJMSContextWrapperSupplier, ExceptionListener {
-    private JMSContextWrapper context;
+public final class JMSSessionContextSupplier  {
+    // Constructor vars
+    private final JMSConnectionContextHolder contextProvider;
     private final int sessionMode;
-    private final DynamicSessionModeJMSContextWrapperSupplier contextProvider;
 
-    JMSSessionContextSupplier(DynamicSessionModeJMSContextWrapperSupplier contextProvider, int sessionMode) {
+    // JMS
+    private JMSContextWrapper context;
+
+    JMSSessionContextSupplier(JMSConnectionContextHolder contextProvider, int sessionMode) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         this.contextProvider = contextProvider;
         this.sessionMode = sessionMode;
     }
 
-    @Override
-    public JMSContextWrapper createContext() {
+    synchronized JMSContextWrapper createContext(ExceptionListener exceptionListener) {
         if (Objects.isNull(context)) {
-            buildAndAssignContext();
+            buildAndAssignContext(exceptionListener);
         }
         return context;
     }
 
-    private synchronized void buildAndAssignContext() {
+    private synchronized void buildAndAssignContext(ExceptionListener exceptionListener) {
         try {
-            JMSContextWrapper contextWrapper = contextProvider.createContext(sessionMode);
-            contextWrapper.setExceptionCallback(this);
-            context = new JMSContextWrapper(contextWrapper.getContext());
+            JMSContextWrapper contextWrapper = contextProvider.createContext(sessionMode, this::onException);
+            context = new JMSContextWrapper(contextWrapper.getContext(), exceptionListener);
             log.info("Session Context built");
         } catch (Exception e) {
             log.error("Failed to build Session Context");
@@ -44,11 +40,13 @@ public final class JMSSessionContextSupplier implements FixedSessionModeJMSConte
         }
     }
 
-    @Override
-    public synchronized void onException(JMSException exception) {
+    private synchronized void onException(JMSException exception) {
         log.error("Session Context expired: {}", exception.getMessage());
+        /*if(Objects.nonNull(context)) {
+            tryAndLogError(() -> buildAndAssignContext(context.getExceptionCallback()));
+        }*/
         JMSContextWrapper previousContext = context;
-        tryAndLogError(this::buildAndAssignContext);
+        context = null;
         if(Objects.nonNull(previousContext))
             previousContext.onException(exception);
     }

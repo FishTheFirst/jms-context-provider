@@ -60,12 +60,17 @@ public class Main {
         consumer2.registerOnReadTimeoutEventHandler(() -> {log.info("Read timeout"); });
 
         Thread.sleep(5000);
-        for (int j = 0; j < 5; j++) {
+        consumer.stop();
+        //contextHolder.close();
+        Thread.sleep(20000);
+        consumer.start();
+        consumer.start();
+        /*for (int j = 0; j < 5; j++) {
             for (int i = 0; i < 10000; i++) {
                 contextHolder.setClientId(String.valueOf(i));
             }
-            consumer.stop();
-        }
+            Thread.sleep(5000);
+        }*/
         Thread.sleep(60000);
 
 

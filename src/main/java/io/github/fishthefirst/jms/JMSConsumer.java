@@ -1,7 +1,5 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextWrapperSupplier;
-import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.handlers.ConsumerVoidEventHandler;
@@ -44,7 +42,7 @@ public final class JMSConsumer implements AutoCloseable {
     private final ScheduledExecutorService clientCreator = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this.getClass().getSimpleName()));
 
     // Constructor vars
-    private final FixedSessionModeJMSContextWrapperSupplier contextProvider;
+    private final JMSSessionContextSupplier contextProvider;
     private final MessageCallback messageCallback;
     private final StringToMessageUnmarshaller stringToMessageUnmarshaller;
     private final String destinationName;
@@ -159,8 +157,15 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     private synchronized void doStart() {
-        if (running.get() && Objects.isNull(consumer)) {
-            clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
+        if (running.get()) {
+            if (Objects.isNull(consumer)) {
+                clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
+            } else if (Objects.nonNull(context)) {
+                tryAndLogError(context::start, "",() -> {
+                    doClose();
+                    doStart();
+                });
+            }
         }
     }
 
@@ -185,8 +190,7 @@ public final class JMSConsumer implements AutoCloseable {
 
     // Create JMS components
     private void createContext() {
-        JMSContextWrapper contextWrapper = Objects.requireNonNull(contextProvider.createContext(), "Context provider returned null. Exception thrown to bail out.");
-        contextWrapper.setExceptionCallback(this::onException);
+        JMSContextWrapper contextWrapper = Objects.requireNonNull(contextProvider.createContext(this::onException), "Context provider returned null. Exception thrown to bail out.");
         context = contextWrapper.getContext();
     }
 
@@ -204,6 +208,7 @@ public final class JMSConsumer implements AutoCloseable {
         }
         consumer.setMessageListener(this::handleMessage);
         watchdogTimer.start(10000);
+        log.info("Consumer {} started on destination: {}", consumerName, destinationName);
     }
 
     private void tryCreateConsumerLoop() {
