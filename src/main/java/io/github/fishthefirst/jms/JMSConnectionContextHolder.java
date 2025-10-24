@@ -1,6 +1,6 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.contextproviders.JMSContextWrapperSupplier;
+import io.github.fishthefirst.contextproviders.DynamicSessionModeJMSContextWrapperSupplier;
 import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import jakarta.jms.ConnectionFactory;
 import jakarta.jms.ExceptionListener;
@@ -12,8 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
+
 @Slf4j
-public final class JMSConnectionContextHolder implements JMSContextWrapperSupplier, ExceptionListener {
+public final class JMSConnectionContextHolder implements DynamicSessionModeJMSContextWrapperSupplier, ExceptionListener, AutoCloseable {
     private JMSContext context;
     private final List<JMSContextWrapper> providedContexts = new ArrayList<>();
     private String clientId;
@@ -31,10 +33,6 @@ public final class JMSConnectionContextHolder implements JMSContextWrapperSuppli
         this.sessionMode = sessionMode;
     }
 
-    public JMSContextWrapper createContext() {
-        return createContext(sessionMode);
-    }
-
     public synchronized JMSContextWrapper createContext(int sessionMode) {
         if (Objects.isNull(context)) {
             buildAndAssignContext();
@@ -46,16 +44,20 @@ public final class JMSConnectionContextHolder implements JMSContextWrapperSuppli
 
     private synchronized void buildAndAssignContext() {
         try {
-            context = connectionFactory.createContext(sessionMode);
+            // This protects connection factory methods from blowing up from multiple connection holders
+            synchronized (connectionFactory) {
+                context = connectionFactory.createContext(sessionMode);
+            }
             context.setClientID(clientId);
             context.setExceptionListener(this);
             if(Objects.nonNull(clientId)) {
-                log.info("Main Context built with client ID {}", clientId);
+                log.info("Connection Context built with client ID {}", clientId);
             }
             else {
-                log.warn("Main Context built without client ID");
+                log.warn("Connection Context built without client ID");
             }
-        } catch (Exception e) {
+        }
+        catch (Exception e) {
             context = null;
             log.error("Failed to build Main Context");
             throw e;
@@ -64,15 +66,10 @@ public final class JMSConnectionContextHolder implements JMSContextWrapperSuppli
 
     @Override
     public synchronized void onException(JMSException exception) {
-        log.error("Main Context expired");
-        log.error("", exception);
-        close();
-        try {
-            buildAndAssignContext();
-        } catch (Exception e2) {
-            //log.error("", e2);
-        }
+        log.error("Connection Context expired: {}", exception.getMessage());
         List<JMSContextWrapper> copyOfWrappers = List.copyOf(providedContexts);
+        close();
+        tryAndLogError(this::buildAndAssignContext);
         providedContexts.clear();
         copyOfWrappers.forEach(jmsContextWrapper -> jmsContextWrapper.onException(exception));
     }
@@ -87,14 +84,12 @@ public final class JMSConnectionContextHolder implements JMSContextWrapperSuppli
     @Override
     public synchronized void close() {
         if(Objects.nonNull(context)) {
-            try {
-                providedContexts.forEach(c->c.getContext().close());
-                context.close();
-            } catch (Exception e2) {
-                log.error("", e2);
+            for (JMSContextWrapper providedContext : providedContexts) {
+                tryAndLogError(providedContext.getContext()::close);
             }
-            context = null;
-            providedContexts.clear();
+            tryAndLogError(context::close);
         }
+        providedContexts.clear();
+        context = null;
     }
 }

@@ -4,9 +4,13 @@ import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
 
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+
 public class JMSContextWrapper implements ExceptionListener {
     private final JMSContext context;
-    private ExceptionListener exceptionCallback;
+    private final AtomicReference<ExceptionListener> exceptionCallback = new AtomicReference<>();
+
     public JMSContextWrapper(JMSContext context) {
         this.context = context;
     }
@@ -17,10 +21,12 @@ public class JMSContextWrapper implements ExceptionListener {
 
     @Override
     public void onException(JMSException exception) {
-        this.exceptionCallback.onException(exception);
+        ExceptionListener exceptionListener = this.exceptionCallback.get();
+        if(Objects.nonNull(exceptionListener))
+            exceptionListener.onException(exception);
     }
 
     public void setExceptionCallback(ExceptionListener listener) {
-        this.exceptionCallback = listener;
+        this.exceptionCallback.set(listener);
     }
 }

@@ -1,45 +1,68 @@
 package io.github.fishthefirst.jms;
 
+import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextWrapperSupplier;
+import io.github.fishthefirst.contextwrapper.JMSContextWrapper;
 import io.github.fishthefirst.data.MessageWithMetadata;
-import io.github.fishthefirst.contextproviders.FixedSessionModeJMSContextSupplier;
 import io.github.fishthefirst.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.handlers.ConsumerVoidEventHandler;
 import io.github.fishthefirst.handlers.MessageCallback;
 import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
+import io.github.fishthefirst.utils.CustomizableThreadFactory;
+import io.github.fishthefirst.utils.WatchdogTimer;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
-import jakarta.jms.JMSRuntimeException;
+import jakarta.jms.Message;
 import jakarta.jms.Queue;
 import jakarta.jms.TextMessage;
 import jakarta.jms.Topic;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.util.Strings;
 
-import java.io.EOFException;
-import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
 @Slf4j
-public final class JMSConsumer implements Runnable, AutoCloseable {
-    private final FixedSessionModeJMSContextSupplier contextProvider;
-    private final Set<ConsumerStringEventHandler> onUnmarshallFailEventHandlers = new HashSet<>();
-    private final Set<ConsumerVoidEventHandler> onReadFailEventHandlers = new HashSet<>();
-    private final Set<ConsumerVoidEventHandler> onReadTimeoutEventHandlers = new HashSet<>();
+public final class JMSConsumer implements AutoCloseable {
+
+    // Atomic refs (w/ Setters)
+    private final AtomicReference<ConsumerStringEventHandler> onUnmarshallFailEventHandler = new AtomicReference<>();
+    private final AtomicReference<ConsumerVoidEventHandler> onReadFailEventHandler = new AtomicReference<>();
+    private final AtomicReference<ConsumerVoidEventHandler> onReadTimeoutEventHandler = new AtomicReference<>();
+
+    // Atomic refs
+    private final AtomicBoolean running = new AtomicBoolean();
+
+    // Init/Watchdog
+    private final WatchdogTimer watchdogTimer = new WatchdogTimer(this::onReadTimeout);
+    private final ScheduledExecutorService clientCreator = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this.getClass().getSimpleName()));
+
+    // Constructor vars
+    private final FixedSessionModeJMSContextWrapperSupplier contextProvider;
     private final MessageCallback messageCallback;
     private final StringToMessageUnmarshaller stringToMessageUnmarshaller;
     private final String destinationName;
     private final boolean topic;
+
+    // JMS
+    private JMSContext context;
     private jakarta.jms.JMSConsumer consumer;
+
+    // User props
     private String selector;
     private String consumerName;
 
-    JMSConsumer(FixedSessionModeJMSContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
+    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
         this(contextProvider, messageCallback, stringToMessageUnmarshaller, destinationName, topic, null, consumerName);
     }
 
-    JMSConsumer(FixedSessionModeJMSContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
+    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToMessageUnmarshaller, "Unmarshaller cannot be null");
@@ -53,64 +76,123 @@ public final class JMSConsumer implements Runnable, AutoCloseable {
         this.destinationName = destinationName;
         this.topic = topic;
         this.consumerName = consumerName;
-        //tryCreateConsumer();
     }
 
-    public void setSelector(String selector) {
-        this.selector = selector;
-        if (Objects.nonNull(consumer))
-            tryCreateConsumer();
-    }
-
-    public void setConsumerName(String consumerName) {
-        this.consumerName = consumerName;
-        if (Objects.nonNull(consumer))
-            tryCreateConsumer();
-    }
-
-    public void setSelectorAndConsumerName(String selector, String consumerName) {
-        this.selector = selector;
-        this.consumerName = consumerName;
-        if (Objects.nonNull(consumer))
-            tryCreateConsumer();
-    }
-
-    @Override
-    public void close() {
-        if (Objects.nonNull(consumer)) {
-            consumer.close();
-            consumer = null;
-            log.info("Consumer {} closed", consumerName);
-        }
-    }
-
+    // Register event handlers
     public void registerOnReadFailEventHandler(ConsumerVoidEventHandler eventHandler) {
-        onReadFailEventHandlers.add(eventHandler);
+        Objects.requireNonNull(eventHandler, "Supplied event handler cannot be null");
+        onReadFailEventHandler.set(eventHandler);
     }
 
     public void registerOnReadTimeoutEventHandler(ConsumerVoidEventHandler eventHandler) {
-        onReadTimeoutEventHandlers.add(eventHandler);
+        Objects.requireNonNull(eventHandler, "Supplied event handler cannot be null");
+        onReadTimeoutEventHandler.set(eventHandler);
     }
 
     public void registerOnUnmarshallFailEventHandler(ConsumerStringEventHandler eventHandler) {
-        onUnmarshallFailEventHandlers.add(eventHandler);
+        Objects.requireNonNull(eventHandler, "Supplied event handler cannot be null");
+        onUnmarshallFailEventHandler.set(eventHandler);
+    }
+
+    // User prop setters
+    public synchronized void setSelector(String selector) {
+        this.selector = selector;
+        if (running.get()) {
+            closeConsumer();
+            doStart();
+        }
+    }
+
+    public synchronized void setConsumerName(String consumerName) {
+        this.consumerName = consumerName;
+        if (running.get()) {
+            closeConsumer();
+            doStart();
+        }
+    }
+
+    public synchronized void setSelectorAndConsumerName(String selector, String consumerName) {
+        this.selector = selector;
+        this.consumerName = consumerName;
+        if (running.get()) {
+            closeConsumer();
+            doStart();
+        }
+    }
+
+    // Consumer controls (affect running status flag)
+    public synchronized void start() {
+        running.set(true);
+        doStart();
+    }
+
+    public synchronized void stop() {
+        running.set(false);
+        doStop();
+    }
+
+    @Override
+    public synchronized void close() {
+        stop();
+        if (Objects.nonNull(context)) {
+            tryAndLogError(context::close, "An exception was thrown while closing discarded context");
+        }
+        context = null;
+        consumer = null;
+    }
+
+    // Private controls (do not affect running status flag)
+    private synchronized void doStop() {
+        watchdogTimer.stop();
+        if (Objects.nonNull(context)) {
+            tryAndLogError(context::stop, "An exception was thrown while closing discarded context");
+        }
+    }
+
+    private synchronized void doClose() {
+        doStop();
+        if (Objects.nonNull(context)) {
+            tryAndLogError(context::close, "An exception was thrown while closing discarded context");
+        }
+        context = null;
+        consumer = null;
+    }
+
+    private synchronized void doStart() {
+        if (running.get() && Objects.isNull(consumer)) {
+            clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    // Events
+    private void onException(JMSException exception) {
+        doClose();
+        doStart();
     }
 
     private void onReadFail() {
-        onReadFailEventHandlers.forEach(this::tryCatch);
+        Optional.ofNullable(onReadFailEventHandler.get()).ifPresent(this::tryCatch);
     }
 
     private void onReadTimeout() {
-        onReadTimeoutEventHandlers.forEach(this::tryCatch);
+        Optional.ofNullable(onReadTimeoutEventHandler.get()).ifPresent(this::tryCatch);
+        watchdogTimer.reset();
     }
 
     private void onUnmarshallFail(String string) {
-        onUnmarshallFailEventHandlers.forEach(c -> tryCatch(string, c));
+        Optional.ofNullable(onUnmarshallFailEventHandler.get()).ifPresent(c -> tryCatch(string, c));
     }
 
-    private void createConsumer(JMSContext context) {
-        if (Objects.nonNull(consumer)) close();
-        context = Objects.requireNonNullElse(context, Objects.requireNonNull(contextProvider.get(), "Context provider returned null. Exception thrown to bail out."));
+    // Create JMS components
+    private void createContext() {
+        JMSContextWrapper contextWrapper = Objects.requireNonNull(contextProvider.createContext(), "Context provider returned null. Exception thrown to bail out.");
+        contextWrapper.setExceptionCallback(this::onException);
+        context = contextWrapper.getContext();
+    }
+
+    private synchronized void createConsumer() {
+        doClose();
+        if (Objects.isNull(context)) createContext();
         if (!topic) {
             if (Objects.nonNull(selector))
                 log.warn("Selector usage for queue is not recommended");
@@ -120,8 +202,29 @@ public final class JMSConsumer implements Runnable, AutoCloseable {
             Topic destination = context.createTopic(destinationName);
             consumer = context.createDurableConsumer(destination, consumerName, selector, false);
         }
+        consumer.setMessageListener(this::handleMessage);
+        watchdogTimer.start(10000);
     }
 
+    private void tryCreateConsumerLoop() {
+        if (Objects.isNull(consumer) && running.get()) {
+            tryAndLogError(this::createConsumer, "Exception thrown when creating consumer", () -> {
+                doClose();
+                clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
+            });
+        }
+    }
+
+    // Close components
+    private synchronized void closeConsumer() {
+        doStop();
+        if (Objects.nonNull(consumer)) {
+            consumer.close();
+            consumer = null;
+        }
+    }
+
+    // Message processing
     private void tryCatch(ConsumerVoidEventHandler eventHandler) {
         try {
             eventHandler.run();
@@ -138,15 +241,6 @@ public final class JMSConsumer implements Runnable, AutoCloseable {
         }
     }
 
-    private void tryCreateConsumer() {
-        try {
-            createConsumer(contextProvider.get());
-        } catch (Exception e) {
-            close();
-            //log.error("", e);
-        }
-    }
-
     private MessageWithMetadata unmarshall(String s) {
         try {
             return stringToMessageUnmarshaller.apply(s);
@@ -160,67 +254,25 @@ public final class JMSConsumer implements Runnable, AutoCloseable {
         try {
             return textMessage.getText();
         } catch (JMSException e) {
+            onReadFail();
             throw new RuntimeException("Failed to parse JMS Message!", e.getCause());
         }
     }
 
-    private void handleMessage(TextMessage message) {
-        String string = parse(message);
+    private void handleMessage(Message message) {
+        watchdogTimer.stop();
+        String string = parse((TextMessage) message);
         MessageWithMetadata unmarshall = unmarshall(string);
         try {
             messageCallback.accept(unmarshall);
-            message.acknowledge();
+            if (context.getTransacted()) {
+                context.commit();
+            } else {
+                message.acknowledge();
+            }
         } catch (Exception e) {
             log.error("Unhandled exception from consumer callback", e);
         }
-    }
-
-    private static void doIf(boolean b, Runnable t, Runnable f) {
-        if (b) {
-            t.run();
-        } else {
-            f.run();
-        }
-    }
-
-    @Override
-    public synchronized void run() {
-        JMSContext context = null;
-        try {
-            context = contextProvider.get();
-            log.info("Consumer {} run", consumerName);
-            if (Objects.isNull(consumer)) {
-                createConsumer(context);
-            }
-            Optional.ofNullable((TextMessage) consumer.receive(10000L))
-                    .ifPresentOrElse(this::handleMessage, this::onReadTimeout);
-            if (context.getTransacted()) {
-                context.commit();
-            }
-        } catch (JMSRuntimeException exception) {
-            Throwable realException = exception.getCause();
-            if (realException instanceof JMSException jmse) {
-                realException = jmse.getLinkedException();
-            }
-            if (realException instanceof InterruptedException ie) {
-                log.warn("Consumer {} exited from InterruptException", consumerName);
-                throw new RuntimeException(ie);
-            }
-            if (realException instanceof EOFException eof) {
-                tryCreateConsumer();
-            }
-            log.error("Consumer {} exception", consumerName);
-            log.error("", realException);
-            onReadFail();
-            Optional.ofNullable(context).ifPresent(c -> {
-                try {
-                    doIf(c.getTransacted(), c::recover, c::rollback);
-                } catch (JMSRuntimeException e) {
-                    log.error("Consumer {} exception", consumerName, e);
-                }
-            });
-        } catch (Exception e) {
-            log.error("Consumer {} exception", consumerName, e);
-        }
+        watchdogTimer.start(10000);
     }
 }
