@@ -44,8 +44,6 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
     // Context Controls
     @Override
     public synchronized void close() {
-
-
         if(Objects.nonNull(context)) {
             tryAndLogError(context::close);
         }

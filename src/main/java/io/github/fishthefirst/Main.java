@@ -59,7 +59,7 @@ public class Main {
         consumer2.registerOnUnmarshallFailEventHandler((s) -> log.error("Failed to unmarshall {}", s));
         consumer2.registerOnReadTimeoutEventHandler(() -> {log.info("Read timeout"); });
 
-        Thread.sleep(5000);
+        Thread.sleep(2000);
         consumer.stop();
         //contextHolder.close();
         Thread.sleep(20000);
@@ -71,7 +71,7 @@ public class Main {
             }
             Thread.sleep(5000);
         }*/
-        Thread.sleep(60000);
+        //Thread.sleep(20000);
 
 
         consumer.close();

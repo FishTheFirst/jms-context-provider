@@ -137,6 +137,8 @@ public final class JMSConsumer implements AutoCloseable {
         }
         context = null;
         consumer = null;
+        watchdogTimer.close();
+        clientCreator.shutdownNow();
     }
 
     // Private controls (do not affect running status flag)
