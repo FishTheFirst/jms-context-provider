@@ -36,7 +36,7 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
     // User props setters
     public synchronized void setClientId(String clientId) {
         this.clientId = clientId;
-        if(Objects.nonNull(context))
+        if (Objects.nonNull(context))
             onException(new JMSException("Client ID Changed", "", new Exception("Client ID Changed")));
 
     }
@@ -44,7 +44,7 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
     // Context Controls
     @Override
     public synchronized void close() {
-        if(Objects.nonNull(context)) {
+        if (Objects.nonNull(context)) {
             tryAndLogError(context::close);
         }
         context = null;
@@ -77,14 +77,12 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
             }
             context.setClientID(clientId);
             context.setExceptionListener(this::onException);
-            if(Objects.nonNull(clientId)) {
+            if (Objects.nonNull(clientId)) {
                 log.info("Connection Context built with client ID {}", clientId);
-            }
-            else {
+            } else {
                 log.warn("Connection Context built without client ID");
             }
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             context = null;
             log.error("Failed to build Main Context");
             throw e;

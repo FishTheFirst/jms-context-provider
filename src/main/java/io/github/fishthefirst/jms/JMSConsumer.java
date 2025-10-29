@@ -163,7 +163,7 @@ public final class JMSConsumer implements AutoCloseable {
             if (Objects.isNull(consumer)) {
                 clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
             } else if (Objects.nonNull(context)) {
-                tryAndLogError(context::start, "",() -> {
+                tryAndLogError(context::start, "", () -> {
                     doClose();
                     doStart();
                 });

@@ -23,8 +23,8 @@ public final class JMSContextWrapper {
         return exceptionCallback;
     }
 
-     void onException(JMSException exception) {
-        if(Objects.nonNull(exceptionCallback))
+    void onException(JMSException exception) {
+        if (Objects.nonNull(exceptionCallback))
             exceptionCallback.onException(exception);
     }
 }

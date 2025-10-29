@@ -9,7 +9,7 @@ import java.util.Objects;
 import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
 @Slf4j
-public final class JMSSessionContextSupplier  {
+public final class JMSSessionContextSupplier {
     // Constructor vars
     private final JMSConnectionContextHolder contextProvider;
     private final int sessionMode;
@@ -44,12 +44,12 @@ public final class JMSSessionContextSupplier  {
 
     private synchronized void onException(JMSException exception) {
         log.error("Session Context expired: {}", exception.getMessage());
-        if(Objects.nonNull(context)) {
+        if (Objects.nonNull(context)) {
             tryAndLogError(context.getContext()::close);
         }
         JMSContextWrapper previousContext = context;
         context = null;
-        if(Objects.nonNull(previousContext))
+        if (Objects.nonNull(previousContext))
             previousContext.onException(exception);
     }
 }
