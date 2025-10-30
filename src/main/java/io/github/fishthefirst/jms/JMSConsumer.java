@@ -55,6 +55,7 @@ public final class JMSConsumer implements AutoCloseable {
     // User props
     private String selector;
     private String consumerName;
+    private boolean noLocal;
 
     JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
         this(contextProvider, messageCallback, stringToMessageUnmarshaller, destinationName, topic, null, consumerName);
@@ -65,8 +66,9 @@ public final class JMSConsumer implements AutoCloseable {
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToMessageUnmarshaller, "Unmarshaller cannot be null");
         Objects.requireNonNull(destinationName, "Destination name cannot be null");
-        if (topic && Strings.isBlank(consumerName))
+        if (topic && Strings.isBlank(consumerName)) {
             throw new IllegalArgumentException("Consumer name cannot be null or empty for topic consumers");
+        }
         this.contextProvider = contextProvider;
         this.messageCallback = messageCallback;
         this.stringToMessageUnmarshaller = stringToMessageUnmarshaller;
@@ -112,6 +114,14 @@ public final class JMSConsumer implements AutoCloseable {
     public synchronized void setSelectorAndConsumerName(String selector, String consumerName) {
         this.selector = selector;
         this.consumerName = consumerName;
+        if (running.get()) {
+            closeConsumer();
+            doStart();
+        }
+    }
+
+    public synchronized void setNoLocal(boolean noLocal) {
+        this.noLocal = noLocal;
         if (running.get()) {
             closeConsumer();
             doStart();
@@ -198,15 +208,18 @@ public final class JMSConsumer implements AutoCloseable {
 
     private synchronized void createConsumer() {
         doClose();
-        if (Objects.isNull(context)) createContext();
+        if (Objects.isNull(context)) {
+            createContext();
+        }
         if (!topic) {
-            if (Objects.nonNull(selector))
+            if (Objects.nonNull(selector)) {
                 log.warn("Selector usage for queue is not recommended");
+            }
             Queue destination = context.createQueue(destinationName);
-            consumer = context.createConsumer(destination, selector);
+            consumer = context.createConsumer(destination, selector, noLocal);
         } else {
             Topic destination = context.createTopic(destinationName);
-            consumer = context.createDurableConsumer(destination, consumerName, selector, false);
+            consumer = context.createDurableConsumer(destination, consumerName, selector, noLocal);
         }
         consumer.setMessageListener(this::handleMessage);
         watchdogTimer.start(10000);
@@ -266,20 +279,28 @@ public final class JMSConsumer implements AutoCloseable {
         }
     }
 
-    private void handleMessage(Message message) {
+    private synchronized void handleMessage(Message message) {
         watchdogTimer.stop();
         String string = parse((TextMessage) message);
         MessageWithMetadata unmarshall = unmarshall(string);
         try {
             messageCallback.accept(unmarshall);
+            commitOrAck(message);
+        } catch (Exception e) {
+            log.error("Unhandled exception from consumer callback", e);
+        }
+        watchdogTimer.start(10000);
+    }
+
+    private void commitOrAck(Message message) {
+        try {
             if (context.getTransacted()) {
                 context.commit();
             } else {
                 message.acknowledge();
             }
         } catch (Exception e) {
-            log.error("Unhandled exception from consumer callback", e);
+            log.error("An exception was thrown while commiting/acknowledging", e);
         }
-        watchdogTimer.start(10000);
     }
 }
