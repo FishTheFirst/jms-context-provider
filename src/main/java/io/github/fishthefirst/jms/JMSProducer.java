@@ -17,6 +17,7 @@ public class JMSProducer {
     private final String destinationName;
     private final String producerName;
     private final Integer messageTimeToLive;
+    private final boolean keepAlive;
     private JMSContext context;
     private jakarta.jms.JMSProducer jmsProducer;
     private Destination destination;
@@ -27,7 +28,8 @@ public class JMSProducer {
                 String destinationName,
                 boolean isTopic,
                 String producerName,
-                Integer messageTimeToLive) {
+                Integer messageTimeToLive,
+                boolean keepAlive) {
         this.objectToStringMarshaller = objectToStringMarshaller;
         this.messagePreprocessor = messagePreprocessor;
         this.contextSupplier = contextSupplier;
@@ -35,6 +37,7 @@ public class JMSProducer {
         this.destinationName = destinationName;
         this.producerName = producerName;
         this.messageTimeToLive = messageTimeToLive;
+        this.keepAlive = keepAlive;
     }
 
     public void sendMessage(Object o) {
@@ -64,5 +67,16 @@ public class JMSProducer {
         if(Objects.nonNull(context))
             context.close();
         context = null;
+    }
+
+    private synchronized void commit() {
+        Objects.requireNonNull(context, "Call to commit without a context");
+        if(context.getTransacted()) {
+            context.commit();
+        }
+        if(!keepAlive) {
+            context.close();
+            context = null;
+        }
     }
 }
