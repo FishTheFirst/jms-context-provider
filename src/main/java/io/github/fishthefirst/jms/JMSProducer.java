@@ -9,7 +9,7 @@ import jakarta.jms.TextMessage;
 
 import java.util.Objects;
 
-public class JMSProducer {
+public final class JMSProducer {
     private final ObjectToStringMarshaller objectToStringMarshaller;
     private final MessagePreprocessor messagePreprocessor;
     private final JMSSessionContextSupplier contextSupplier;
@@ -45,7 +45,10 @@ public class JMSProducer {
         sendMessage(string);
     }
 
-    public void sendMessage(String s) {
+    public synchronized void sendMessage(String s) {
+        if(Objects.isNull(context)) {
+            createProducer();
+        }
         TextMessage textMessage = context.createTextMessage(s);
         messagePreprocessor.accept(textMessage);
         jmsProducer.send(destination, textMessage);
@@ -54,7 +57,10 @@ public class JMSProducer {
     private void createProducer() {
         JMSContextWrapper contextWrapper = contextSupplier.createContext(this::onException);
         this.context = contextWrapper.getContext();
-        this.jmsProducer = context.createProducer().setTimeToLive(messageTimeToLive);
+        this.jmsProducer = context.createProducer();
+        if(Objects.nonNull(messageTimeToLive)) {
+            this.jmsProducer.setTimeToLive(messageTimeToLive);
+        }
         if(isTopic) {
             destination = context.createTopic(destinationName);
         }
@@ -63,16 +69,27 @@ public class JMSProducer {
         }
     }
 
-    private void onException(JMSException e) {
+    private synchronized void onException(JMSException e) {
         if(Objects.nonNull(context))
             context.close();
         context = null;
     }
 
-    private synchronized void commit() {
+    synchronized void commit() {
         Objects.requireNonNull(context, "Call to commit without a context");
         if(context.getTransacted()) {
             context.commit();
+        }
+        if(!keepAlive) {
+            context.close();
+            context = null;
+        }
+    }
+
+    synchronized void rollback() {
+        Objects.requireNonNull(context, "Call to rollback without a context");
+        if(context.getTransacted()) {
+            context.rollback();
         }
         if(!keepAlive) {
             context.close();

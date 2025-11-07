@@ -1,9 +1,9 @@
 package io.github.fishthefirst.serde;
 
-import jakarta.jms.TextMessage;
+import jakarta.jms.Message;
 
 import java.util.function.Consumer;
 
 @FunctionalInterface
-public interface MessagePreprocessor extends Consumer<TextMessage> {
+public interface MessagePreprocessor extends Consumer<Message> {
 }

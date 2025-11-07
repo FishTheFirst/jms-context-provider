@@ -14,12 +14,12 @@ import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogErr
 
 @Slf4j
 public final class JMSConnectionContextHolder implements AutoCloseable {
-    // Final vars
-    private final List<JMSContextWrapper> providedContexts = new ArrayList<>();
-
     // Constructor vars
     private final int sessionMode;
     private final ConnectionFactory connectionFactory;
+
+    // Object vars
+    private List<JMSContextWrapper> providedContexts = new ArrayList<>();
 
     // JMS
     private JMSContext context;
@@ -49,7 +49,7 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
         }
         context = null;
         List<JMSContextWrapper> copy = List.copyOf(providedContexts);
-        providedContexts.clear();
+        providedContexts = new ArrayList<>();
         for (JMSContextWrapper providedContext : copy) {
             tryAndLogError(() -> providedContext.onException(new JMSException("Connection closing")));
         }

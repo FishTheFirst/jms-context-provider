@@ -40,6 +40,6 @@ public final class JMSContextAwareComponentFactory {
                                              String producerName,
                                              int sessionMode,
                                              boolean keepAlive) {
-        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), objectToStringMarshaller, t-> {}, destinationName, topic, producerName, null, keepAlive);
+        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), objectToStringMarshaller, t-> {}, destinationName, topic, producerName, 7*60*60*24, keepAlive);
     }
 }
