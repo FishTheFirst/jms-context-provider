@@ -49,7 +49,8 @@ public final class JMSSessionContextSupplier {
         }
         JMSContextWrapper previousContext = context;
         context = null;
-        if (Objects.nonNull(previousContext))
+        if (Objects.nonNull(previousContext)) {
             previousContext.onException(exception);
+        }
     }
 }

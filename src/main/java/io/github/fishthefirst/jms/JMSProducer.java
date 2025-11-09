@@ -70,8 +70,9 @@ public final class JMSProducer {
     }
 
     private synchronized void onException(JMSException e) {
-        if(Objects.nonNull(context))
+        if(Objects.nonNull(context)) {
             context.close();
+        }
         context = null;
     }
 

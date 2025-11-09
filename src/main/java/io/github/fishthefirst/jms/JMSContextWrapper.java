@@ -24,7 +24,8 @@ public final class JMSContextWrapper {
     }
 
     void onException(JMSException exception) {
-        if (Objects.nonNull(exceptionCallback))
+        if (Objects.nonNull(exceptionCallback)) {
             exceptionCallback.onException(exception);
+        }
     }
 }
