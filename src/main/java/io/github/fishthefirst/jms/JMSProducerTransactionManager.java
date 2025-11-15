@@ -1,11 +1,12 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.handlers.SendMessageExceptionHandler;
-import io.github.fishthefirst.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.serde.MessageToStringMarshaller;
 import jakarta.jms.JMSContext;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -16,25 +17,25 @@ public final class JMSProducerTransactionManager {
     private static final AtomicInteger transactionId = new AtomicInteger(0);
     private final ThreadLocal<Boolean> isTransacted = new ThreadLocal<>();
     private final ThreadLocal<JMSProducer> transactionProducer = new ThreadLocal<>();
-    private final ThreadLocal<List<String>> transactedMessages = new ThreadLocal<>();
+    private final ThreadLocal<List<Object>> transactedMessages = new ThreadLocal<>();
     private final JMSConnectionContextHolder connectionContextHolder;
-    private final ObjectToStringMarshaller objectToStringMarshaller;
+    private final MessageToStringMarshaller messageToStringMarshaller;
     private final SendMessageExceptionHandler sendMessageExceptionHandler;
     private final String destinationName;
     private final JMSProducer transactionlessProducer;
     private final boolean topic;
 
     public JMSProducerTransactionManager(JMSConnectionContextHolder connectionContextHolder,
-                                         ObjectToStringMarshaller objectToStringMarshaller,
+                                         MessageToStringMarshaller messageToStringMarshaller,
                                          SendMessageExceptionHandler sendMessageExceptionHandler,
                                          String destinationName,
                                          boolean topic) {
         this.connectionContextHolder = connectionContextHolder;
-        this.objectToStringMarshaller = objectToStringMarshaller;
+        this.messageToStringMarshaller = messageToStringMarshaller;
         this.sendMessageExceptionHandler = sendMessageExceptionHandler;
         this.destinationName = destinationName;
         this.topic = topic;
-        transactionlessProducer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, objectToStringMarshaller, destinationName, topic, "transactionless-producer-" + transactionId.getAndIncrement(), JMSContext.AUTO_ACKNOWLEDGE, true);
+        transactionlessProducer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, destinationName, topic, "transactionless-producer-" + transactionId.getAndIncrement(), JMSContext.AUTO_ACKNOWLEDGE, true);
     }
 
     public void startTransaction() {
@@ -42,20 +43,33 @@ public final class JMSProducerTransactionManager {
         transactedMessages.set(new ArrayList<>());
     }
 
-    public void sendObject(Object o) {
-        JMSProducer jmsProducer = getProducerForMessage();
-        jmsProducer.sendMessage(o);
+    public void sendObjectsTransacted(Iterable<Object> objects) {
+        startTransaction();
+        Iterator<Object> iterator = objects.iterator();
+        while (isTransactionOpen() && iterator.hasNext()) {
+            sendObject(iterator.next());
+        }
+        if (isTransactionOpen()) {
+            commit();
+            return;
+        }
+        while (iterator.hasNext()) {
+            messageFailedCallback(iterator.next());
+        }
     }
 
-    public void sendMessage(String s) {
+    public void sendObject(Object object) {
         JMSProducer jmsProducer = getProducerForMessage();
         try{
-            jmsProducer.sendMessage(s);
+            jmsProducer.sendMessage(object);
             if(isTransactionOpen()) {
-                transactedMessages.get().add(s);
+                transactedMessages.get().add(object);
             }
         } catch (Exception e) {
-            rollback();
+            if(isTransactionOpen()) {
+                rollback();
+            }
+            messageFailedCallback(object);
         }
     }
 
@@ -66,14 +80,14 @@ public final class JMSProducerTransactionManager {
 
     public void rollback() {
         tryCatch(JMSProducer::rollback, "rolling back");
-        transactedMessages.get().forEach(this::messageFailedCallback);
+        Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback));
         clearThreadLocals();
     }
 
     private JMSProducer getProducerForMessage() {
-        return !(isTransactionOpen()) ? transactionlessProducer :
+        return !isTransactionOpen() ? transactionlessProducer :
              Optional.ofNullable(transactionProducer.get()).orElseGet(() -> {
-                JMSProducer producer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, objectToStringMarshaller, destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), JMSContext.SESSION_TRANSACTED, false);
+                JMSProducer producer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), JMSContext.SESSION_TRANSACTED, false);
                 transactionProducer.set(producer);
                 return producer;
              });
@@ -84,12 +98,12 @@ public final class JMSProducerTransactionManager {
             Optional.ofNullable(transactionProducer.get()).ifPresent(producerMethod);
         } catch (Exception e) {
             log.error("An exception was thrown while {}", action, e);
-            if(!(isTransactionOpen())) return;
+            if(!isTransactionOpen()) return;
             transactedMessages.get().forEach(this::messageFailedCallback);
         }
     }
 
-    private void messageFailedCallback(String failedMessage) {
+    private void messageFailedCallback(Object failedMessage) {
         try {
             sendMessageExceptionHandler.accept(failedMessage);
         } catch (Exception sendMessageExceptionHandlerException) {
@@ -103,8 +117,13 @@ public final class JMSProducerTransactionManager {
     }
 
     private void clearThreadLocals() {
+        Optional.ofNullable(transactionProducer.get()).ifPresent(JMSProducer::close);
         transactionProducer.remove();
         isTransacted.remove();
         transactedMessages.remove();
+    }
+
+    public void close() {
+        transactionlessProducer.close();
     }
 }

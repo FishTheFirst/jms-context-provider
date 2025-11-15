@@ -18,8 +18,8 @@
         <!-->
         <jackson.version>3.0.0</jackson.version>
         <jackson.groupid>tools.jackson</jackson.groupid>
-         <!-->
-        <jackson.version>2.20.0</jackson.version>
+        <!-->
+        <jackson.version>2.20.1</jackson.version>
         <jackson.groupid>com.fasterxml.jackson</jackson.groupid>
     </properties>
 

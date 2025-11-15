@@ -1,36 +1,42 @@
 package io.github.fishthefirst.jms;
 
+import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.serde.MessagePreprocessor;
-import io.github.fishthefirst.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.serde.MessageToStringMarshaller;
 import jakarta.jms.Destination;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
 import jakarta.jms.TextMessage;
+import lombok.extern.slf4j.Slf4j;
 
+import java.time.Instant;
 import java.util.Objects;
 
+@Slf4j
 public final class JMSProducer {
-    private final ObjectToStringMarshaller objectToStringMarshaller;
+    private final MessageToStringMarshaller messageToStringMarshaller;
     private final MessagePreprocessor messagePreprocessor;
     private final JMSSessionContextSupplier contextSupplier;
+
     private final boolean isTopic;
+    private final boolean keepAlive;
+    private final Integer messageTimeToLive;
     private final String destinationName;
     private final String producerName;
-    private final Integer messageTimeToLive;
-    private final boolean keepAlive;
+
     private JMSContext context;
     private jakarta.jms.JMSProducer jmsProducer;
     private Destination destination;
 
     JMSProducer(JMSSessionContextSupplier contextSupplier,
-                ObjectToStringMarshaller objectToStringMarshaller,
+                MessageToStringMarshaller messageToStringMarshaller,
                 MessagePreprocessor messagePreprocessor,
                 String destinationName,
                 boolean isTopic,
                 String producerName,
                 Integer messageTimeToLive,
                 boolean keepAlive) {
-        this.objectToStringMarshaller = objectToStringMarshaller;
+        this.messageToStringMarshaller = messageToStringMarshaller;
         this.messagePreprocessor = messagePreprocessor;
         this.contextSupplier = contextSupplier;
         this.isTopic = isTopic;
@@ -40,18 +46,21 @@ public final class JMSProducer {
         this.keepAlive = keepAlive;
     }
 
-    public void sendMessage(Object o) {
-        String string = objectToStringMarshaller.apply(o);
-        sendMessage(string);
-    }
-
-    public synchronized void sendMessage(String s) {
+    public synchronized void sendMessage(Object o) {
         if(Objects.isNull(context)) {
             createProducer();
         }
-        TextMessage textMessage = context.createTextMessage(s);
-        messagePreprocessor.accept(textMessage);
+        TextMessage textMessage = context.createTextMessage(serialize(o));
+        preprocessMessage(textMessage);
         jmsProducer.send(destination, textMessage);
+    }
+
+    private void preprocessMessage(TextMessage textMessage) {
+        try {
+            messagePreprocessor.accept(textMessage);
+        } catch (Exception e) {
+            throw new RuntimeException("Message preprocessor threw an exception", e);
+        }
     }
 
     private void createProducer() {
@@ -61,19 +70,21 @@ public final class JMSProducer {
         if(Objects.nonNull(messageTimeToLive)) {
             this.jmsProducer.setTimeToLive(messageTimeToLive);
         }
-        if(isTopic) {
-            destination = context.createTopic(destinationName);
-        }
-        else {
-            destination = context.createQueue(destinationName);
+        destination = isTopic ? context.createTopic(destinationName) : context.createQueue(destinationName);
+    }
+
+    private String serialize(Object o) {
+        try {
+            MessageWithMetadata messageWithMetadata = new MessageWithMetadata(Instant.now(), o);
+            String serialized = messageToStringMarshaller.apply(messageWithMetadata);
+            return Objects.requireNonNull(serialized, "Serializer returned null");
+        } catch (Exception e) {
+            throw new RuntimeException("Exception thrown while serializing", e);
         }
     }
 
     private synchronized void onException(JMSException e) {
-        if(Objects.nonNull(context)) {
-            context.close();
-        }
-        context = null;
+        close();
     }
 
     synchronized void commit() {
@@ -82,8 +93,7 @@ public final class JMSProducer {
             context.commit();
         }
         if(!keepAlive) {
-            context.close();
-            context = null;
+            close();
         }
     }
 
@@ -93,8 +103,20 @@ public final class JMSProducer {
             context.rollback();
         }
         if(!keepAlive) {
-            context.close();
-            context = null;
+            close();
         }
+    }
+
+    public void close() {
+        if(Objects.nonNull(context)) {
+            try {
+                context.close();
+            } catch (Exception e) {
+                log.error("An exception was thrown while closing JMS Producer {} context", producerName);
+            }
+        }
+        context = null;
+        jmsProducer = null;
+        destination = null;
     }
 }

@@ -1,7 +1,7 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.handlers.MessageCallback;
-import io.github.fishthefirst.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.serde.MessageToStringMarshaller;
 import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
 import jakarta.jms.ConnectionFactory;
 
@@ -34,12 +34,12 @@ public final class JMSContextAwareComponentFactory {
     }
 
     public static JMSProducer createProducer(JMSConnectionContextHolder mainContextHolder,
-                                             ObjectToStringMarshaller objectToStringMarshaller,
+                                             MessageToStringMarshaller messageToStringMarshaller,
                                              String destinationName,
                                              boolean topic,
                                              String producerName,
                                              int sessionMode,
                                              boolean keepAlive) {
-        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), objectToStringMarshaller, t-> {}, destinationName, topic, producerName, 7*60*60*24, keepAlive);
+        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageToStringMarshaller, t-> {}, destinationName, topic, producerName, 7*60*60*24, keepAlive);
     }
 }
