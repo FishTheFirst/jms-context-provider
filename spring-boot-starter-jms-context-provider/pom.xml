@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>io.github.fishthefirst</groupId>
+        <artifactId>jms-context-provider</artifactId>
+        <version>${package.version}</version>
+    </parent>
+
+    <artifactId>spring-boot-starter-jms-context-provider</artifactId>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+            <version>[3.0.0,3.6.0)</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.fishthefirst</groupId>
+            <artifactId>jms-context-provider-spring-aop</artifactId>
+            <version>${package.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.fishthefirst</groupId>
+            <artifactId>jms-context-provider-jackson2</artifactId>
+            <version>${package.version}</version>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>io.github.fishthefirst</groupId>
+        <artifactId>jms-context-provider</artifactId>
+        <version>${package.version}</version>
+    </parent>
+
+    <artifactId>jms-context-provider-jackson2</artifactId>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-->
+        <jackson.version>3.0.0</jackson.version>
+        <jackson.groupid>tools.jackson</jackson.groupid>
+        <!-->
+        <jackson.version>[2.0.0, 3.0.0)</jackson.version>
+        <jackson.groupid>com.fasterxml.jackson</jackson.groupid>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>${jackson.groupid}.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>${jackson.groupid}.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.fishthefirst</groupId>
+            <artifactId>jms-context-provider-core</artifactId>
+            <version>${package.version}</version>
+        </dependency>
+    </dependencies>
+</project>
