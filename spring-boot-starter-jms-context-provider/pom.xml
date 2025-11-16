@@ -28,10 +28,5 @@
             <artifactId>jms-context-provider-spring-aop</artifactId>
             <version>${package.version}</version>
         </dependency>
-        <dependency>
-            <groupId>io.github.fishthefirst</groupId>
-            <artifactId>jms-context-provider-jackson2</artifactId>
-            <version>${package.version}</version>
-        </dependency>
     </dependencies>
 </project>

@@ -1,8 +1,9 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.handlers.MessageCallback;
-import io.github.fishthefirst.serde.MessageToStringMarshaller;
-import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
+import io.github.fishthefirst.serde.MessagePreprocessor;
+import io.github.fishthefirst.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.serde.StringToObjectUnmarshaller;
 import jakarta.jms.ConnectionFactory;
 
 public final class JMSContextAwareComponentFactory {
@@ -16,30 +17,32 @@ public final class JMSContextAwareComponentFactory {
 
     public static JMSConsumer createConsumer(JMSConnectionContextHolder mainContextHolder,
                                              MessageCallback messageCallback,
-                                             StringToMessageUnmarshaller stringToMessageUnmarshaller,
+                                             StringToObjectUnmarshaller stringToObjectUnmarshaller,
                                              String destinationName,
                                              boolean topic,
                                              String consumerName) {
-        return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, mainContextHolder.getSessionMode()), messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
+        return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, mainContextHolder.getSessionMode()), messageCallback, stringToObjectUnmarshaller, destinationName, topic, consumerName);
     }
 
     public static JMSConsumer createConsumer(JMSConnectionContextHolder mainContextHolder,
                                              MessageCallback messageCallback,
-                                             StringToMessageUnmarshaller stringToMessageUnmarshaller,
+                                             StringToObjectUnmarshaller stringToObjectUnmarshaller,
                                              String destinationName,
                                              boolean topic,
                                              String consumerName,
                                              int sessionMode) {
-        return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageCallback, stringToMessageUnmarshaller, destinationName, topic, consumerName);
+        return new JMSConsumer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageCallback, stringToObjectUnmarshaller, destinationName, topic, consumerName);
     }
 
     public static JMSProducer createProducer(JMSConnectionContextHolder mainContextHolder,
-                                             MessageToStringMarshaller messageToStringMarshaller,
+                                             ObjectToStringMarshaller messageToStringMarshaller,
+                                             MessagePreprocessor messagePreprocessor,
                                              String destinationName,
                                              boolean topic,
                                              String producerName,
                                              int sessionMode,
-                                             boolean keepAlive) {
-        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageToStringMarshaller, t-> {}, destinationName, topic, producerName, 7*60*60*24, keepAlive);
+                                             boolean keepAlive,
+                                             boolean alwaysEncodeAsString) {
+        return new JMSProducer(new JMSSessionContextSupplier(mainContextHolder, sessionMode), messageToStringMarshaller, messagePreprocessor, destinationName, topic, producerName, 7*60*60*24, keepAlive, alwaysEncodeAsString);
     }
 }

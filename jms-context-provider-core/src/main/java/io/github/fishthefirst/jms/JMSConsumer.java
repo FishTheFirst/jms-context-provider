@@ -1,11 +1,13 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.data.MessageWithMetadata;
+import io.github.fishthefirst.enums.JMSConsumerBehaviour;
 import io.github.fishthefirst.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.handlers.ConsumerVoidEventHandler;
 import io.github.fishthefirst.handlers.MessageCallback;
-import io.github.fishthefirst.serde.StringToMessageUnmarshaller;
+import io.github.fishthefirst.serde.StringToObjectUnmarshaller;
 import io.github.fishthefirst.utils.CustomizableThreadFactory;
+import io.github.fishthefirst.utils.JMSRuntimeExceptionUtils;
 import io.github.fishthefirst.utils.WatchdogTimer;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
@@ -44,7 +46,7 @@ public final class JMSConsumer implements AutoCloseable {
     // Constructor vars
     private final JMSSessionContextSupplier contextProvider;
     private final MessageCallback messageCallback;
-    private final StringToMessageUnmarshaller stringToMessageUnmarshaller;
+    private final StringToObjectUnmarshaller stringToObjectUnmarshaller;
     private final String destinationName;
     private final boolean topic;
 
@@ -56,22 +58,24 @@ public final class JMSConsumer implements AutoCloseable {
     private String selector;
     private String consumerName;
     private boolean noLocal;
+    private JMSConsumerBehaviour onParseFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
+    private JMSConsumerBehaviour onUnmarshallFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
 
-    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String consumerName) {
-        this(contextProvider, messageCallback, stringToMessageUnmarshaller, destinationName, topic, null, consumerName);
+    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToObjectUnmarshaller stringToObjectUnmarshaller, String destinationName, boolean topic, String consumerName) {
+        this(contextProvider, messageCallback, stringToObjectUnmarshaller, destinationName, topic, null, consumerName);
     }
 
-    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToMessageUnmarshaller stringToMessageUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
+    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToObjectUnmarshaller stringToObjectUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
-        Objects.requireNonNull(stringToMessageUnmarshaller, "Unmarshaller cannot be null");
+        Objects.requireNonNull(stringToObjectUnmarshaller, "Unmarshaller cannot be null");
         Objects.requireNonNull(destinationName, "Destination name cannot be null");
         if (topic && consumerName.isBlank()) {
             throw new IllegalArgumentException("Consumer name cannot be null or empty for topic consumers");
         }
         this.contextProvider = contextProvider;
         this.messageCallback = messageCallback;
-        this.stringToMessageUnmarshaller = stringToMessageUnmarshaller;
+        this.stringToObjectUnmarshaller = stringToObjectUnmarshaller;
         this.selector = selector;
         this.destinationName = destinationName;
         this.topic = topic;
@@ -118,6 +122,14 @@ public final class JMSConsumer implements AutoCloseable {
             closeConsumer();
             doStart();
         }
+    }
+
+    public void setOnUnmarshallFailBehaviour(JMSConsumerBehaviour behaviour) {
+        this.onUnmarshallFailBehaviour = behaviour;
+    }
+
+    public void setOnParseFailBehaviour(JMSConsumerBehaviour behaviour) {
+        this.onParseFailBehaviour = behaviour;
     }
 
     public synchronized void setNoLocal(boolean noLocal) {
@@ -188,16 +200,16 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     private void onReadFail() {
-        Optional.ofNullable(onReadFailEventHandler.get()).ifPresent(this::tryCatch);
+        Optional.ofNullable(onReadFailEventHandler.get()).ifPresent(JMSRuntimeExceptionUtils::tryAndLogError);
     }
 
     private void onReadTimeout() {
-        Optional.ofNullable(onReadTimeoutEventHandler.get()).ifPresent(this::tryCatch);
+        Optional.ofNullable(onReadTimeoutEventHandler.get()).ifPresent(JMSRuntimeExceptionUtils::tryAndLogError);
         watchdogTimer.reset();
     }
 
     private void onUnmarshallFail(String string) {
-        Optional.ofNullable(onUnmarshallFailEventHandler.get()).ifPresent(c -> tryCatch(string, c));
+        Optional.ofNullable(onUnmarshallFailEventHandler.get()).ifPresent(handler -> tryAndLogError(string, handler));
     }
 
     // Create JMS components
@@ -245,25 +257,9 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     // Message processing
-    private void tryCatch(ConsumerVoidEventHandler eventHandler) {
+    private Object unmarshall(String s, Class<?> c) {
         try {
-            eventHandler.run();
-        } catch (Exception e) {
-            log.error("", e);
-        }
-    }
-
-    private void tryCatch(String s, ConsumerStringEventHandler eventHandler) {
-        try {
-            eventHandler.accept(s);
-        } catch (Exception e) {
-            log.error("", e);
-        }
-    }
-
-    private MessageWithMetadata unmarshall(String s) {
-        try {
-            return stringToMessageUnmarshaller.apply(s);
+            return stringToObjectUnmarshaller.apply(s, c);
         } catch (Exception e) {
             onUnmarshallFail(s);
             throw new RuntimeException(e);
@@ -281,23 +277,48 @@ public final class JMSConsumer implements AutoCloseable {
 
     private synchronized void handleMessage(Message message) {
         watchdogTimer.stop();
-        String string = parse((TextMessage) message);
-        MessageWithMetadata unmarshall = unmarshall(string);
+
+        String string = null;
         try {
-            messageCallback.accept(unmarshall);
-            commitOrAck(message);
+            string = parse((TextMessage) message);
+        } catch (Exception e) {
+            switch (onParseFailBehaviour) {
+                case DISCARD -> {
+                    ackAndCommit(message);
+                    return;
+                }
+                case ROLLBACK -> throw e;
+            }
+        }
+
+        Object unmarshalledObject = null;
+        try {
+            MessageWithMetadata messageWithMetadata = new MessageWithMetadata(string);
+            unmarshalledObject = unmarshall(messageWithMetadata.getPayload(), messageWithMetadata.getPayloadClass());
+        } catch (Exception e) {
+            switch (onUnmarshallFailBehaviour) {
+                case DISCARD -> {
+                    ackAndCommit(message);
+                    return;
+                }
+                case ROLLBACK -> throw new RuntimeException(e);
+            }
+        }
+
+        try {
+            messageCallback.accept(unmarshalledObject);
+            ackAndCommit(message);
         } catch (Exception e) {
             log.error("Unhandled exception from consumer callback", e);
         }
         watchdogTimer.start(10000);
     }
 
-    private void commitOrAck(Message message) {
+    private void ackAndCommit(Message message) {
         try {
+            message.acknowledge();
             if (context.getTransacted()) {
                 context.commit();
-            } else {
-                message.acknowledge();
             }
         } catch (Exception e) {
             log.error("An exception was thrown while commiting/acknowledging", e);

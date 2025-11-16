@@ -2,7 +2,7 @@ package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.serde.MessagePreprocessor;
-import io.github.fishthefirst.serde.MessageToStringMarshaller;
+import io.github.fishthefirst.serde.ObjectToStringMarshaller;
 import jakarta.jms.Destination;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
@@ -16,7 +16,7 @@ import java.util.Objects;
 public final class JMSProducer {
     private static final Logger log = LoggerFactory.getLogger(JMSProducer.class);
 
-    private final MessageToStringMarshaller messageToStringMarshaller;
+    private final ObjectToStringMarshaller objectToStringMarshaller;
     private final MessagePreprocessor messagePreprocessor;
     private final JMSSessionContextSupplier contextSupplier;
 
@@ -25,20 +25,21 @@ public final class JMSProducer {
     private final Integer messageTimeToLive;
     private final String destinationName;
     private final String producerName;
-
+    private final boolean alwaysEncodeAsString;
     private JMSContext context;
     private jakarta.jms.JMSProducer jmsProducer;
     private Destination destination;
 
     JMSProducer(JMSSessionContextSupplier contextSupplier,
-                MessageToStringMarshaller messageToStringMarshaller,
+                ObjectToStringMarshaller objectToStringMarshaller,
                 MessagePreprocessor messagePreprocessor,
                 String destinationName,
                 boolean isTopic,
                 String producerName,
                 Integer messageTimeToLive,
-                boolean keepAlive) {
-        this.messageToStringMarshaller = messageToStringMarshaller;
+                boolean keepAlive,
+                boolean alwaysEncodeAsString) {
+        this.objectToStringMarshaller = objectToStringMarshaller;
         this.messagePreprocessor = messagePreprocessor;
         this.contextSupplier = contextSupplier;
         this.isTopic = isTopic;
@@ -46,13 +47,14 @@ public final class JMSProducer {
         this.producerName = producerName;
         this.messageTimeToLive = messageTimeToLive;
         this.keepAlive = keepAlive;
+        this.alwaysEncodeAsString = alwaysEncodeAsString;
     }
 
     public synchronized void sendMessage(Object o) {
         if(Objects.isNull(context)) {
             createProducer();
         }
-        TextMessage textMessage = context.createTextMessage(serialize(o));
+        TextMessage textMessage = context.createTextMessage(serialize(o).toStringPayload());
         preprocessMessage(textMessage);
         jmsProducer.send(destination, textMessage);
     }
@@ -75,11 +77,10 @@ public final class JMSProducer {
         destination = isTopic ? context.createTopic(destinationName) : context.createQueue(destinationName);
     }
 
-    private String serialize(Object o) {
+    private MessageWithMetadata serialize(Object o) {
         try {
-            MessageWithMetadata messageWithMetadata = new MessageWithMetadata(Instant.now(), o);
-            String serialized = messageToStringMarshaller.apply(messageWithMetadata);
-            return Objects.requireNonNull(serialized, "Serializer returned null");
+            String serialized = Objects.requireNonNull(objectToStringMarshaller.apply(o), "Serializer returned null");
+            return new MessageWithMetadata(Instant.now(), serialized, alwaysEncodeAsString ? String.class.getName() : o.getClass().getName());
         } catch (Exception e) {
             throw new RuntimeException("Exception thrown while serializing", e);
         }

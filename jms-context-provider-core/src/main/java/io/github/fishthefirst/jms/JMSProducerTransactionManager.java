@@ -1,7 +1,8 @@
 package io.github.fishthefirst.jms;
 
 import io.github.fishthefirst.handlers.SendMessageExceptionHandler;
-import io.github.fishthefirst.serde.MessageToStringMarshaller;
+import io.github.fishthefirst.serde.MessagePreprocessor;
+import io.github.fishthefirst.serde.ObjectToStringMarshaller;
 import jakarta.jms.JMSContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,9 +10,12 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+
+import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
 public final class JMSProducerTransactionManager {
     private static final Logger log = LoggerFactory.getLogger(JMSProducerTransactionManager.class);
@@ -20,28 +24,33 @@ public final class JMSProducerTransactionManager {
     private final ThreadLocal<JMSProducer> transactionProducer = new ThreadLocal<>();
     private final ThreadLocal<List<Object>> transactedMessages = new ThreadLocal<>();
     private final JMSConnectionContextHolder connectionContextHolder;
-    private final MessageToStringMarshaller messageToStringMarshaller;
+    private final ObjectToStringMarshaller messageToStringMarshaller;
     private final SendMessageExceptionHandler sendMessageExceptionHandler;
+    private final MessagePreprocessor messagePreprocessor;
     private final String destinationName;
-    private final JMSProducer transactionlessProducer;
     private final boolean topic;
+    private final boolean alwaysEncodeAsString;
 
     public JMSProducerTransactionManager(JMSConnectionContextHolder connectionContextHolder,
-                                         MessageToStringMarshaller messageToStringMarshaller,
-                                         SendMessageExceptionHandler sendMessageExceptionHandler,
+                                         ObjectToStringMarshaller messageToStringMarshaller,
+                                         SendMessageExceptionHandler sendMessageExceptionHandler, MessagePreprocessor messagePreprocessor,
                                          String destinationName,
-                                         boolean topic) {
+                                         boolean topic,
+                                         boolean alwaysEncodeAsString) {
         this.connectionContextHolder = connectionContextHolder;
         this.messageToStringMarshaller = messageToStringMarshaller;
         this.sendMessageExceptionHandler = sendMessageExceptionHandler;
+        this.messagePreprocessor = messagePreprocessor;
         this.destinationName = destinationName;
         this.topic = topic;
-        transactionlessProducer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, destinationName, topic, "transactionless-producer-" + transactionId.getAndIncrement(), JMSContext.AUTO_ACKNOWLEDGE, true);
+        this.alwaysEncodeAsString = alwaysEncodeAsString;
     }
 
     public void startTransaction() {
         isTransacted.set(true);
-        transactedMessages.set(new ArrayList<>());
+        if(Objects.isNull(transactedMessages.get())) {
+            transactedMessages.set(new ArrayList<>());
+        }
     }
 
     public void sendObjectsTransacted(Iterable<Object> objects) {
@@ -65,11 +74,11 @@ public final class JMSProducerTransactionManager {
             jmsProducer.sendMessage(object);
             if(isTransactionOpen()) {
                 transactedMessages.get().add(object);
+            } else {
+                commit();
             }
         } catch (Exception e) {
-            if(isTransactionOpen()) {
-                rollback();
-            }
+            rollback();
             messageFailedCallback(object);
         }
     }
@@ -86,22 +95,13 @@ public final class JMSProducerTransactionManager {
     }
 
     private JMSProducer getProducerForMessage() {
-        return !isTransactionOpen() ? transactionlessProducer :
-             Optional.ofNullable(transactionProducer.get()).orElseGet(() -> {
-                JMSProducer producer = JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), JMSContext.SESSION_TRANSACTED, false);
-                transactionProducer.set(producer);
-                return producer;
-             });
+        JMSProducer producer = Optional.ofNullable(transactionProducer.get()).orElseGet(() -> JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, messagePreprocessor,destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), isTransactionOpen() ? JMSContext.SESSION_TRANSACTED : JMSContext.AUTO_ACKNOWLEDGE, false, alwaysEncodeAsString));
+        transactionProducer.set(producer);
+        return producer;
     }
 
     private void tryCatch(Consumer<JMSProducer> producerMethod, String action) {
-        try {
-            Optional.ofNullable(transactionProducer.get()).ifPresent(producerMethod);
-        } catch (Exception e) {
-            log.error("An exception was thrown while {}", action, e);
-            if(!isTransactionOpen()) return;
-            transactedMessages.get().forEach(this::messageFailedCallback);
-        }
+        tryAndLogError(() -> Optional.ofNullable(transactionProducer.get()).ifPresent(producerMethod), "An exception was thrown while" + action, () -> Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback)));
     }
 
     private void messageFailedCallback(Object failedMessage) {
@@ -122,9 +122,5 @@ public final class JMSProducerTransactionManager {
         transactionProducer.remove();
         isTransacted.remove();
         transactedMessages.remove();
-    }
-
-    public void close() {
-        transactionlessProducer.close();
     }
 }
