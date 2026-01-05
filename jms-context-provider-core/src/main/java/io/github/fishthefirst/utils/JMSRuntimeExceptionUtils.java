@@ -25,8 +25,9 @@ public final class JMSRuntimeExceptionUtils {
         try {
             r.run();
         } catch (Exception e) {
-            if (e instanceof JMSRuntimeException jmsRuntimeException)
+            if (e instanceof JMSRuntimeException jmsRuntimeException) {
                 log.error(exceptionMessage, jmsRuntimeException.getCause());
+            }
             else {
                 log.error(exceptionMessage, e);
             }
@@ -46,8 +47,9 @@ public final class JMSRuntimeExceptionUtils {
         try {
             consumer.accept(arg);
         } catch (Exception e) {
-            if (e instanceof JMSRuntimeException jmsRuntimeException)
+            if (e instanceof JMSRuntimeException jmsRuntimeException) {
                 log.error(exceptionMessage, jmsRuntimeException.getCause());
+            }
             else {
                 log.error(exceptionMessage, e);
             }

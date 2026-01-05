@@ -39,6 +39,10 @@ public final class MessageWithMetadata {
         return payload;
     }
 
+    public String getPayloadClassName() {
+        return className;
+    }
+
     public Class<?> getPayloadClass() throws ClassNotFoundException {
         return Class.forName(className);
     }

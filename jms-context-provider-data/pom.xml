@@ -9,28 +9,26 @@
         <version>${package.version}</version>
     </parent>
 
-    <artifactId>spring-boot-starter-jms-context-provider</artifactId>
+    <artifactId>jms-context-provider-data</artifactId>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
 
     <dependencies>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
-            <version>[3.0.0,3.6.0)</version>
-        </dependency>
-        <dependency>
             <groupId>io.github.fishthefirst</groupId>
-            <artifactId>jms-context-provider-spring-aop</artifactId>
+            <artifactId>jms-context-provider-interface</artifactId>
             <version>${package.version}</version>
         </dependency>
         <dependency>
-            <groupId>io.github.fishthefirst</groupId>
-            <artifactId>jms-context-provider-data</artifactId>
-            <version>${package.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>[2.0.0,2.20.1)</version>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>RELEASE</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
+
 </project>

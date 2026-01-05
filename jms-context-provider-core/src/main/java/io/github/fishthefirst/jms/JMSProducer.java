@@ -1,6 +1,5 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.serde.MessagePreprocessor;
 import io.github.fishthefirst.serde.ObjectToStringMarshaller;
 import jakarta.jms.Destination;
@@ -10,7 +9,6 @@ import jakarta.jms.TextMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.Objects;
 
 public final class JMSProducer {
@@ -25,10 +23,19 @@ public final class JMSProducer {
     private final Integer messageTimeToLive;
     private final String destinationName;
     private final String producerName;
-    private final boolean alwaysEncodeAsString;
     private JMSContext context;
     private jakarta.jms.JMSProducer jmsProducer;
     private Destination destination;
+
+    JMSProducer(JMSSessionContextSupplier contextSupplier,
+                ObjectToStringMarshaller objectToStringMarshaller,
+                String destinationName,
+                boolean isTopic,
+                String producerName,
+                int messageTimeToLive,
+                boolean keepAlive) {
+        this(contextSupplier, objectToStringMarshaller, null, destinationName, isTopic, producerName, messageTimeToLive, keepAlive);
+    }
 
     JMSProducer(JMSSessionContextSupplier contextSupplier,
                 ObjectToStringMarshaller objectToStringMarshaller,
@@ -36,25 +43,29 @@ public final class JMSProducer {
                 String destinationName,
                 boolean isTopic,
                 String producerName,
-                Integer messageTimeToLive,
-                boolean keepAlive,
-                boolean alwaysEncodeAsString) {
+                int messageTimeToLive,
+                boolean keepAlive) {
+        Objects.requireNonNull(objectToStringMarshaller, "Object to String Marshaller cannot be null");
+        Objects.requireNonNull(contextSupplier, "JMS Session Context Supplier cannot be null");
+        Objects.requireNonNull(destinationName, "Destination name cannot be null nor blank");
+        if(destinationName.isBlank()) throw new IllegalArgumentException("Destination name cannot be null nor blank");
+        Objects.requireNonNull(destinationName, "Producer name cannot be null nor blank");
+        if(destinationName.isBlank()) throw new IllegalArgumentException("Producer name cannot be null nor blank");
         this.objectToStringMarshaller = objectToStringMarshaller;
-        this.messagePreprocessor = messagePreprocessor;
+        this.messagePreprocessor = Objects.requireNonNullElseGet(messagePreprocessor, () -> message -> {});
         this.contextSupplier = contextSupplier;
         this.isTopic = isTopic;
         this.destinationName = destinationName;
         this.producerName = producerName;
         this.messageTimeToLive = messageTimeToLive;
         this.keepAlive = keepAlive;
-        this.alwaysEncodeAsString = alwaysEncodeAsString;
     }
 
     public synchronized void sendMessage(Object o) {
         if(Objects.isNull(context)) {
             createProducer();
         }
-        TextMessage textMessage = context.createTextMessage(serialize(o).toStringPayload());
+        TextMessage textMessage = context.createTextMessage(serialize(o));
         preprocessMessage(textMessage);
         jmsProducer.send(destination, textMessage);
     }
@@ -77,10 +88,9 @@ public final class JMSProducer {
         destination = isTopic ? context.createTopic(destinationName) : context.createQueue(destinationName);
     }
 
-    private MessageWithMetadata serialize(Object o) {
+    private String serialize(Object o) {
         try {
-            String serialized = Objects.requireNonNull(objectToStringMarshaller.apply(o), "Serializer returned null");
-            return new MessageWithMetadata(Instant.now(), serialized, alwaysEncodeAsString ? String.class.getName() : o.getClass().getName());
+            return Objects.requireNonNull(objectToStringMarshaller.marshal(o), "Serializer returned null");
         } catch (Exception e) {
             throw new RuntimeException("Exception thrown while serializing", e);
         }

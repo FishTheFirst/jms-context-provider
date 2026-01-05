@@ -38,9 +38,9 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
     // User props setters
     public synchronized void setClientId(String clientId) {
         this.clientId = clientId;
-        if (Objects.nonNull(context))
+        if (Objects.nonNull(context)) {
             onException(new JMSException("Client ID Changed", "", new Exception("Client ID Changed")));
-
+        }
     }
 
     // Context Controls

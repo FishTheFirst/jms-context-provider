@@ -1,14 +1,13 @@
 package io.github.fishthefirst.jms;
 
-import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.enums.JMSConsumerBehaviour;
+import io.github.fishthefirst.utils.CustomizableThreadFactory;
+import io.github.fishthefirst.utils.JMSRuntimeExceptionUtils;
+import io.github.fishthefirst.utils.WatchdogTimer;
 import io.github.fishthefirst.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.handlers.ConsumerVoidEventHandler;
 import io.github.fishthefirst.handlers.MessageCallback;
 import io.github.fishthefirst.serde.StringToObjectUnmarshaller;
-import io.github.fishthefirst.utils.CustomizableThreadFactory;
-import io.github.fishthefirst.utils.JMSRuntimeExceptionUtils;
-import io.github.fishthefirst.utils.WatchdogTimer;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
 import jakarta.jms.Message;
@@ -26,6 +25,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static io.github.fishthefirst.enums.JMSConsumerBehaviour.DISCARD;
+import static io.github.fishthefirst.enums.JMSConsumerBehaviour.DISCARD_AFTER_RETRY_COUNT_EXCEEDED;
 import static io.github.fishthefirst.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
 public final class JMSConsumer implements AutoCloseable {
@@ -53,6 +54,9 @@ public final class JMSConsumer implements AutoCloseable {
     // JMS
     private JMSContext context;
     private jakarta.jms.JMSConsumer consumer;
+    private int unmarshalTryCount;
+    private int unmarshalRetryLimit;
+    private String lastParsedJMSMessageId;
 
     // User props
     private String selector;
@@ -125,8 +129,26 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     public void setOnUnmarshallFailBehaviour(JMSConsumerBehaviour behaviour) {
+        if (behaviour == DISCARD_AFTER_RETRY_COUNT_EXCEEDED) behaviour = DISCARD;
+
         this.onUnmarshallFailBehaviour = behaviour;
     }
+
+    /**
+     * Setting this limit will automatically set the onUnmarshallFailBehaviour to DISCARD_AFTER_RETRY_COUNT_EXCEEDED
+     * if retryLimit is greater than 0, or DISCARD otherwise.
+     *
+     * @param retryLimit
+     */
+    public void setUnmarshalRetryLimit(int retryLimit) {
+        if (retryLimit < 1) {
+            this.onUnmarshallFailBehaviour = DISCARD;
+        } else {
+            this.onUnmarshallFailBehaviour = DISCARD_AFTER_RETRY_COUNT_EXCEEDED;
+            this.unmarshalRetryLimit = retryLimit;
+        }
+    }
+
 
     public void setOnParseFailBehaviour(JMSConsumerBehaviour behaviour) {
         this.onParseFailBehaviour = behaviour;
@@ -257,9 +279,9 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     // Message processing
-    private Object unmarshall(String s, Class<?> c) {
+    private Object unmarshall(String s) {
         try {
-            return stringToObjectUnmarshaller.apply(s, c);
+            return stringToObjectUnmarshaller.unmarshal(s);
         } catch (Exception e) {
             onUnmarshallFail(s);
             throw new RuntimeException(e);
@@ -278,40 +300,67 @@ public final class JMSConsumer implements AutoCloseable {
     private synchronized void handleMessage(Message message) {
         watchdogTimer.stop();
 
-        String string = null;
         try {
-            string = parse((TextMessage) message);
-        } catch (Exception e) {
-            switch (onParseFailBehaviour) {
-                case DISCARD -> {
-                    ackAndCommit(message);
-                    return;
+            String string = null;
+            try {
+                string = parse((TextMessage) message);
+            } catch (Exception e) {
+                switch (onParseFailBehaviour) {
+                    case DISCARD -> {
+                        ackAndCommit(message);
+                        return;
+                    }
+                    case ROLLBACK -> {
+                        log.error("", e);
+                        return;
+                    }
                 }
-                case ROLLBACK -> throw e;
             }
-        }
 
-        Object unmarshalledObject = null;
-        try {
-            MessageWithMetadata messageWithMetadata = new MessageWithMetadata(string);
-            unmarshalledObject = unmarshall(messageWithMetadata.getPayload(), messageWithMetadata.getPayloadClass());
-        } catch (Exception e) {
-            switch (onUnmarshallFailBehaviour) {
-                case DISCARD -> {
-                    ackAndCommit(message);
-                    return;
+            String jmsMessageId;
+            try {
+                jmsMessageId = message.getJMSMessageID();
+                if (!Objects.equals(lastParsedJMSMessageId, jmsMessageId)) {
+                    unmarshalTryCount = 0;
                 }
-                case ROLLBACK -> throw new RuntimeException(e);
+            } catch (JMSException e) {
+                throw new RuntimeException(e);
             }
-        }
+            lastParsedJMSMessageId = jmsMessageId;
 
-        try {
-            messageCallback.accept(unmarshalledObject);
-            ackAndCommit(message);
-        } catch (Exception e) {
-            log.error("Unhandled exception from consumer callback", e);
+            Object unmarshalledObject = null;
+            try {
+                unmarshalledObject = unmarshall(string);
+            } catch (Exception e) {
+                switch (onUnmarshallFailBehaviour) {
+                    case DISCARD -> {
+                        ackAndCommit(message);
+                        return;
+                    }
+                    case DISCARD_AFTER_RETRY_COUNT_EXCEEDED -> {
+                        if (unmarshalTryCount > unmarshalRetryLimit) {
+                            ackAndCommit(message);
+                        } else {
+                            log.error("", e);
+                        }
+                        return;
+                    }
+                    case ROLLBACK -> {
+                        log.error("", e);
+                        return;
+                    }
+                }
+            }
+
+            try {
+                messageCallback.accept(unmarshalledObject);
+                ackAndCommit(message);
+            } catch (Exception e) {
+                log.error("Unhandled exception from consumer callback", e);
+            }
+        } finally {
+            watchdogTimer.start(10000);
         }
-        watchdogTimer.start(10000);
     }
 
     private void ackAndCommit(Message message) {

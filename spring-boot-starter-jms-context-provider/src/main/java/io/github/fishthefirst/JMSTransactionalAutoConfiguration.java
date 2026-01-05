@@ -1,11 +1,16 @@
 package io.github.fishthefirst;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.fishthefirst.data.MessageWithMetadata;
 import io.github.fishthefirst.handlers.SendMessageExceptionHandler;
 import io.github.fishthefirst.jms.JMSConnectionContextHolder;
 import io.github.fishthefirst.jms.JMSContextAwareComponentFactory;
 import io.github.fishthefirst.jms.JMSProducerTransactionManager;
 import io.github.fishthefirst.serde.MessagePreprocessor;
+import io.github.fishthefirst.serde.MessageWithMetadataMarshaller;
 import io.github.fishthefirst.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.serde.StringToObjectUnmarshaller;
 import io.github.fishthefirst.transactional.JMSTransactionContextAspect;
 import jakarta.jms.ConnectionFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -45,7 +50,9 @@ public final class JMSTransactionalAutoConfiguration {
                                                                        @Nullable MessagePreprocessor messagePreprocessor,
                                                                        @Value("application.jms-context-provider.destination-name") String destinationName,
                                                                        @Value("application.jms-context-provider.topic:false") boolean topic) {
-        return new JMSProducerTransactionManager(connectionContextHolder, messageToStringMarshaller, Objects.requireNonNullElse(sendMessageExceptionHandler, (message) -> {}), Objects.requireNonNullElse(messagePreprocessor, message -> {}),destinationName, topic, false);
+        return new JMSProducerTransactionManager(connectionContextHolder, messageToStringMarshaller, Objects.requireNonNullElse(sendMessageExceptionHandler, (message) -> {
+        }), Objects.requireNonNullElse(messagePreprocessor, message -> {
+        }), destinationName, topic);
     }
 
     @Bean
@@ -53,6 +60,29 @@ public final class JMSTransactionalAutoConfiguration {
     public JMSTransactionContextAspect jmsTransactionContextAspect(@Lazy JMSProducerTransactionManager transactionManager) {
         return new JMSTransactionContextAspect(transactionManager);
     }
+
+    @Bean
+    @ConditionalOnMissingBean(ObjectToStringMarshaller.class)
+    public ObjectToStringMarshaller objectToStringMarshaller(@Lazy ObjectMapper objectMapper) {
+        return new MessageWithMetadataMarshaller((o) -> {
+            try {
+                return objectMapper.writeValueAsString(o);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }, false);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(StringToObjectUnmarshaller.class)
+    public StringToObjectUnmarshaller stringToObjectUnmarshaller(@Lazy ObjectMapper objectMapper) {
+        return (s) -> {
+            MessageWithMetadata message = new MessageWithMetadata(s);
+            try {
+                return objectMapper.readValue(message.getPayload(), message.getPayloadClass());
+            } catch (JsonProcessingException | ClassNotFoundException e) {
+                throw new RuntimeException(e);
+            }
+        };
+    }
 }
-
-

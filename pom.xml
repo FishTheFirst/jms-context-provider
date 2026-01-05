@@ -9,14 +9,16 @@
     <version>${package.version}</version>
     <packaging>pom</packaging>
     <modules>
-        <module>jms-context-provider-core</module>
+        <module>jms-context-provider-interface</module>
         <module>jms-context-provider-spring-aop</module>
         <module>spring-boot-starter-jms-context-provider</module>
+        <module>jms-context-provider-data</module>
+        <module>jms-context-provider-core</module>
     </modules>
 
     <properties>
-        <maven.compiler.source>8</maven.compiler.source>
-        <maven.compiler.target>8</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <package.version>1.0.0</package.version>
     </properties>

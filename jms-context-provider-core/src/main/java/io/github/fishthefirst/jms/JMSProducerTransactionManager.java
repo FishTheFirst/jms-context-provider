@@ -1,5 +1,6 @@
 package io.github.fishthefirst.jms;
 
+
 import io.github.fishthefirst.handlers.SendMessageExceptionHandler;
 import io.github.fishthefirst.serde.MessagePreprocessor;
 import io.github.fishthefirst.serde.ObjectToStringMarshaller;
@@ -29,21 +30,23 @@ public final class JMSProducerTransactionManager {
     private final MessagePreprocessor messagePreprocessor;
     private final String destinationName;
     private final boolean topic;
-    private final boolean alwaysEncodeAsString;
 
     public JMSProducerTransactionManager(JMSConnectionContextHolder connectionContextHolder,
                                          ObjectToStringMarshaller messageToStringMarshaller,
-                                         SendMessageExceptionHandler sendMessageExceptionHandler, MessagePreprocessor messagePreprocessor,
+                                         SendMessageExceptionHandler sendMessageExceptionHandler,
+                                         MessagePreprocessor messagePreprocessor,
                                          String destinationName,
-                                         boolean topic,
-                                         boolean alwaysEncodeAsString) {
+                                         boolean topic) {
+        Objects.requireNonNull(connectionContextHolder, "JMS Connection Context Holder cannot be null");
+        Objects.requireNonNull(connectionContextHolder, "Object to String Marshaller cannot be null");
+        Objects.requireNonNull(connectionContextHolder, "JMS Connection Context Holder cannot be null");
+
         this.connectionContextHolder = connectionContextHolder;
         this.messageToStringMarshaller = messageToStringMarshaller;
-        this.sendMessageExceptionHandler = sendMessageExceptionHandler;
+        this.sendMessageExceptionHandler = Objects.requireNonNullElseGet(sendMessageExceptionHandler, () -> (message) -> {});
         this.messagePreprocessor = messagePreprocessor;
         this.destinationName = destinationName;
         this.topic = topic;
-        this.alwaysEncodeAsString = alwaysEncodeAsString;
     }
 
     public void startTransaction() {
@@ -95,7 +98,7 @@ public final class JMSProducerTransactionManager {
     }
 
     private JMSProducer getProducerForMessage() {
-        JMSProducer producer = Optional.ofNullable(transactionProducer.get()).orElseGet(() -> JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, messagePreprocessor,destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), isTransactionOpen() ? JMSContext.SESSION_TRANSACTED : JMSContext.AUTO_ACKNOWLEDGE, false, alwaysEncodeAsString));
+        JMSProducer producer = Optional.ofNullable(transactionProducer.get()).orElseGet(() -> JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, messagePreprocessor, destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), isTransactionOpen() ? JMSContext.SESSION_TRANSACTED : JMSContext.AUTO_ACKNOWLEDGE, false));
         transactionProducer.set(producer);
         return producer;
     }
@@ -113,8 +116,7 @@ public final class JMSProducerTransactionManager {
     }
 
     private boolean isTransactionOpen() {
-        Optional<Boolean> isTransactedOptional = Optional.ofNullable(isTransacted.get());
-        return isTransactedOptional.isPresent() && isTransactedOptional.get();
+        return Optional.ofNullable(isTransacted.get()).orElse(false);
     }
 
     private void clearThreadLocals() {
