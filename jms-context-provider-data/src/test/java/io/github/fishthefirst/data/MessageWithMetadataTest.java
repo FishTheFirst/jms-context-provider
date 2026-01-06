@@ -1,5 +1,6 @@
 package io.github.fishthefirst.data;
 
+import io.github.fishthefirst.jmscontextprovider.data.MessageWithMetadata;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
