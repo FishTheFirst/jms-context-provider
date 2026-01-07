@@ -61,7 +61,7 @@ class JMSProducerTransactionManagerTest {
     }
 
     @Test
-    public void onSendMessageFailDuringNonTransaction_NoAbort() {
+    public void sendObjectFailDuringNonTransaction_NoAbort() {
         JMSContextWrapper contextWrapperMock = Mockito.mock(JMSContextWrapper.class);
         JMSContext jmsContextMock = Mockito.mock(JMSContext.class);
         JMSProducer jmsProducer = Mockito.mock(JMSProducer.class);
