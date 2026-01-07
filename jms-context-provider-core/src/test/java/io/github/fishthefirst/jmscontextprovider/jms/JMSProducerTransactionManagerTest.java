@@ -1,13 +1,17 @@
 package io.github.fishthefirst.jmscontextprovider.jms;
 
 import jakarta.jms.Destination;
+import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSContext;
+import jakarta.jms.JMSException;
 import jakarta.jms.JMSProducer;
 import jakarta.jms.JMSRuntimeException;
 import jakarta.jms.TextMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -80,5 +84,28 @@ class JMSProducerTransactionManagerTest {
 
         jmsProducerTransactionManager.sendObject("Object 4");
         verify(jmsContextMock, times(4)).createProducer();
+    }
+
+    @Captor
+    ArgumentCaptor<ExceptionListener> exceptionListenerArgumentCaptor;
+
+    @Test
+    public void contextClosedDuringTransaction() {
+        JMSContextWrapper contextWrapperMock = Mockito.mock(JMSContextWrapper.class);
+        JMSContext jmsContextMock = Mockito.mock(JMSContext.class);
+        JMSProducer jmsProducer = Mockito.mock(JMSProducer.class);
+
+        when(connectionContextHolder.createContext(anyInt(), exceptionListenerArgumentCaptor.capture())).thenReturn(contextWrapperMock);
+        when(contextWrapperMock.getContext()).thenReturn(jmsContextMock);
+        when(jmsContextMock.createProducer()).thenReturn(jmsProducer);
+
+        jmsProducerTransactionManager.startTransaction();
+        jmsProducerTransactionManager.sendObject("Object 1");
+
+        exceptionListenerArgumentCaptor.getValue().onException(new JMSException("Closing context"));
+
+        jmsProducerTransactionManager.sendObject("Object 2");
+        jmsProducerTransactionManager.commit();
+        verify(jmsContextMock, times(1)).createProducer();
     }
 }

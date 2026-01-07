@@ -25,10 +25,12 @@ import static io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptio
 public final class JMSProducerTransactionManager {
     private static final Logger log = LoggerFactory.getLogger(JMSProducerTransactionManager.class);
     private static final AtomicInteger transactionId = new AtomicInteger(0);
+
     private final ThreadLocal<Boolean> isTransacted = new ThreadLocal<>();
     private final ThreadLocal<JMSProducer> transactionProducer = new ThreadLocal<>();
     private final ThreadLocal<List<Object>> transactedMessages = new ThreadLocal<>();
     private final ThreadLocal<Boolean> transactionAlreadyFailed = new ThreadLocal<>();
+
     private final JMSConnectionContextHolder connectionContextHolder;
     private final ObjectToStringMarshaller messageToStringMarshaller;
     private final SendMessageExceptionHandler sendMessageExceptionHandler;
@@ -90,7 +92,10 @@ public final class JMSProducerTransactionManager {
     }
 
     public void sendObject(Object object) {
-        if(isTransactionOpen() && hasTransactionFailed()) {
+        boolean transactionOpen = isTransactionOpen();
+        List<Object> transactedMessagesList = transactedMessages.get();
+
+        if(transactionOpen && (hasTransactionFailed() || (!transactedMessagesList.isEmpty() && !isProducerAlive()))) {
             messageFailedCallback(object);
             return;
         }
@@ -98,18 +103,22 @@ public final class JMSProducerTransactionManager {
         JMSProducer jmsProducer = getProducerForMessage();
         try {
             jmsProducer.sendMessage(object);
-            if (isTransactionOpen()) {
-                transactedMessages.get().add(object);
+            if (transactionOpen) {
+                transactedMessagesList.add(object);
             } else {
                 commit();
             }
         } catch (Exception e) {
-            if (isTransactionOpen()) {
+            if (transactionOpen) {
                 transactionAlreadyFailed.set(true);
             }
             rollback();
             messageFailedCallback(object);
         }
+    }
+
+    private Boolean isProducerAlive() {
+        return Optional.ofNullable(transactionProducer.get()).map(JMSProducer::isAlive).orElse(false);
     }
 
     public void commit() {

@@ -132,4 +132,8 @@ public final class JMSProducer {
         jmsProducer = null;
         destination = null;
     }
+
+    public boolean isAlive() {
+        return Objects.nonNull(context) && Objects.nonNull(jmsProducer) && Objects.nonNull(destination);
+    }
 }
