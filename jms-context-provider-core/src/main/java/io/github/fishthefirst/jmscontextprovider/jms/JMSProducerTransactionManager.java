@@ -56,6 +56,7 @@ public final class JMSProducerTransactionManager {
         this.messagePreprocessor = messagePreprocessor;
         this.destinationName = destinationName;
         this.topic = topic;
+        // TODO How to enable executor configuration
         this.executor = new ThreadPoolExecutor(
                 0,
                 8,
