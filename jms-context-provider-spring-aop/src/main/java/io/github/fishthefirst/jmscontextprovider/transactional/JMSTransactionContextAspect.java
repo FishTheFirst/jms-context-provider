@@ -17,11 +17,16 @@ public final class JMSTransactionContextAspect {
     }
 
     @Around("@annotation(JMSTransactional)")
-    public Object wrapWithTransaction(ProceedingJoinPoint joinPoint) throws Throwable {
+    public Object wrapWithTransaction(ProceedingJoinPoint joinPoint, JMSTransactional jmsTransactional) throws Throwable {
         transactionManager.startTransaction();
         try {
             Object proceed = joinPoint.proceed();
-            transactionManager.commit();
+            if(jmsTransactional.async()) {
+                transactionManager.commitAsync();
+            }
+            else {
+                transactionManager.commit();
+            }
             return proceed;
         } catch (Throwable e) {
             transactionManager.rollback();

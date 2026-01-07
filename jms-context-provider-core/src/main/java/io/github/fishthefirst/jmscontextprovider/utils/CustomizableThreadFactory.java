@@ -9,6 +9,10 @@ public final class CustomizableThreadFactory implements ThreadFactory {
     private final AtomicInteger threadNumber = new AtomicInteger(1);
     private final String threadNamePrefix;
 
+    public static CustomizableThreadFactory getInstance(Object object) {
+        return getInstance(object.getClass().getSimpleName());
+    }
+
     public static CustomizableThreadFactory getInstance(String threadNamePrefix) {
         return staticMap.computeIfAbsent(threadNamePrefix, CustomizableThreadFactory::new);
     }

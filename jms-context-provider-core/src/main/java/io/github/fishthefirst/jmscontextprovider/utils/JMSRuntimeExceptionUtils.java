@@ -31,7 +31,7 @@ public final class JMSRuntimeExceptionUtils {
             else {
                 log.error(exceptionMessage, e);
             }
-            onException.run();
+            tryAndLogError(onException);
         }
     }
 

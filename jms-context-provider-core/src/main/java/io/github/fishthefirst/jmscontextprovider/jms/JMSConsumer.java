@@ -42,7 +42,7 @@ public final class JMSConsumer implements AutoCloseable {
 
     // Init/Watchdog
     private final WatchdogTimer watchdogTimer = new WatchdogTimer(this::onReadTimeout);
-    private final ScheduledExecutorService clientCreator = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this.getClass().getSimpleName()));
+    private final ScheduledExecutorService clientCreator = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this));
 
     // Constructor vars
     private final JMSSessionContextSupplier contextProvider;

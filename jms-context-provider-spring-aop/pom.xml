@@ -38,5 +38,11 @@
             <artifactId>jms-context-provider-core</artifactId>
             <version>${package.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>6.0.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

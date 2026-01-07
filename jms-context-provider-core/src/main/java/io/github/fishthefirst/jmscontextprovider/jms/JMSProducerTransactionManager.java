@@ -4,6 +4,7 @@ package io.github.fishthefirst.jmscontextprovider.jms;
 import io.github.fishthefirst.jmscontextprovider.handlers.SendMessageExceptionHandler;
 import io.github.fishthefirst.jmscontextprovider.serde.MessagePreprocessor;
 import io.github.fishthefirst.jmscontextprovider.serde.ObjectToStringMarshaller;
+import io.github.fishthefirst.jmscontextprovider.utils.CustomizableThreadFactory;
 import jakarta.jms.JMSContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +14,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -24,12 +28,15 @@ public final class JMSProducerTransactionManager {
     private final ThreadLocal<Boolean> isTransacted = new ThreadLocal<>();
     private final ThreadLocal<JMSProducer> transactionProducer = new ThreadLocal<>();
     private final ThreadLocal<List<Object>> transactedMessages = new ThreadLocal<>();
+    private final ThreadLocal<Boolean> transactionAlreadyFailed = new ThreadLocal<>();
     private final JMSConnectionContextHolder connectionContextHolder;
     private final ObjectToStringMarshaller messageToStringMarshaller;
     private final SendMessageExceptionHandler sendMessageExceptionHandler;
     private final MessagePreprocessor messagePreprocessor;
     private final String destinationName;
     private final boolean topic;
+
+    private final ThreadPoolExecutor executor;
 
     public JMSProducerTransactionManager(JMSConnectionContextHolder connectionContextHolder,
                                          ObjectToStringMarshaller messageToStringMarshaller,
@@ -43,15 +50,25 @@ public final class JMSProducerTransactionManager {
 
         this.connectionContextHolder = connectionContextHolder;
         this.messageToStringMarshaller = messageToStringMarshaller;
-        this.sendMessageExceptionHandler = Objects.requireNonNullElseGet(sendMessageExceptionHandler, () -> (message) -> {});
+        this.sendMessageExceptionHandler = Objects.requireNonNullElseGet(sendMessageExceptionHandler,
+                () -> (message) -> {
+                });
         this.messagePreprocessor = messagePreprocessor;
         this.destinationName = destinationName;
         this.topic = topic;
+        this.executor = new ThreadPoolExecutor(
+                0,
+                8,
+                30,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(1000),
+                CustomizableThreadFactory.getInstance(this),
+                new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     public void startTransaction() {
         isTransacted.set(true);
-        if(Objects.isNull(transactedMessages.get())) {
+        if (Objects.isNull(transactedMessages.get())) {
             transactedMessages.set(new ArrayList<>());
         }
     }
@@ -59,10 +76,10 @@ public final class JMSProducerTransactionManager {
     public void sendObjectsTransacted(Iterable<Object> objects) {
         startTransaction();
         Iterator<Object> iterator = objects.iterator();
-        while (isTransactionOpen() && iterator.hasNext()) {
+        while (!hasTransactionFailed() && iterator.hasNext()) {
             sendObject(iterator.next());
         }
-        if (isTransactionOpen()) {
+        if (!hasTransactionFailed()) {
             commit();
             return;
         }
@@ -72,29 +89,63 @@ public final class JMSProducerTransactionManager {
     }
 
     public void sendObject(Object object) {
+        if(isTransactionOpen() && hasTransactionFailed()) {
+            messageFailedCallback(object);
+            return;
+        }
+
         JMSProducer jmsProducer = getProducerForMessage();
-        try{
+        try {
             jmsProducer.sendMessage(object);
-            if(isTransactionOpen()) {
+            if (isTransactionOpen()) {
                 transactedMessages.get().add(object);
             } else {
                 commit();
             }
         } catch (Exception e) {
+            if (isTransactionOpen()) {
+                transactionAlreadyFailed.set(true);
+            }
             rollback();
             messageFailedCallback(object);
         }
     }
 
     public void commit() {
-        tryCatch(JMSProducer::commit, "committing");
+        if(hasTransactionFailed()) {
+            rollback();
+        }
+        else {
+            tryCatch(JMSProducer::commit, "committing");
+        }
         clearThreadLocals();
+    }
+
+    public void commitAsync() {
+        try {
+            executor.submit(() -> {
+                setContext(transactionProducer.get(), transactedMessages.get(), isTransacted.get(), transactionAlreadyFailed.get());
+                commit();
+            });
+        } finally {
+            // This only removes this thread's locals and not the new thread's locals
+            clearThreadLocalsNoClose();
+        }
     }
 
     public void rollback() {
         tryCatch(JMSProducer::rollback, "rolling back");
         Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback));
-        clearThreadLocals();
+    }
+
+    private void setContext(JMSProducer producer,
+                            List<Object> transactedMessages,
+                            Boolean isTransacted,
+                            Boolean hasTransactionFailed) {
+        this.transactionProducer.set(producer);
+        this.transactedMessages.set(transactedMessages);
+        this.isTransacted.set(isTransacted);
+        this.transactionAlreadyFailed.set(hasTransactionFailed);
     }
 
     private JMSProducer getProducerForMessage() {
@@ -119,10 +170,19 @@ public final class JMSProducerTransactionManager {
         return Optional.ofNullable(isTransacted.get()).orElse(false);
     }
 
+    private boolean hasTransactionFailed() {
+        return Optional.ofNullable(transactionAlreadyFailed.get()).orElse(false);
+    }
+
     private void clearThreadLocals() {
         Optional.ofNullable(transactionProducer.get()).ifPresent(JMSProducer::close);
+        clearThreadLocalsNoClose();
+    }
+
+    private void clearThreadLocalsNoClose() {
         transactionProducer.remove();
         isTransacted.remove();
         transactedMessages.remove();
+        transactionAlreadyFailed.remove();
     }
 }

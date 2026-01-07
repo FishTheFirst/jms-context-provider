@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class WatchdogTimer {
     private int lastValue;
-    private final ScheduledExecutorService timeoutWatchdog = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this.getClass().getSimpleName()));
+    private final ScheduledExecutorService timeoutWatchdog = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this));
     private final Runnable callback;
     private ScheduledFuture<?> timeoutFuture;
 
