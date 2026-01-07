@@ -56,6 +56,8 @@ public final class JMSConsumer implements AutoCloseable {
     private jakarta.jms.JMSConsumer consumer;
     private int unmarshalTryCount;
     private int unmarshalRetryLimit;
+    private int consumeRetryLimit;
+    private int consumeTryCount;
     private String lastParsedJMSMessageId;
 
     // User props
@@ -64,12 +66,24 @@ public final class JMSConsumer implements AutoCloseable {
     private boolean noLocal;
     private JMSConsumerBehaviour onParseFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
     private JMSConsumerBehaviour onUnmarshallFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
+    private JMSConsumerBehaviour onConsumeFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
 
-    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToObjectUnmarshaller stringToObjectUnmarshaller, String destinationName, boolean topic, String consumerName) {
+    JMSConsumer(JMSSessionContextSupplier contextProvider,
+                MessageCallback messageCallback,
+                StringToObjectUnmarshaller stringToObjectUnmarshaller,
+                String destinationName,
+                boolean topic,
+                String consumerName) {
         this(contextProvider, messageCallback, stringToObjectUnmarshaller, destinationName, topic, null, consumerName);
     }
 
-    JMSConsumer(JMSSessionContextSupplier contextProvider, MessageCallback messageCallback, StringToObjectUnmarshaller stringToObjectUnmarshaller, String destinationName, boolean topic, String selector, String consumerName) {
+    JMSConsumer(JMSSessionContextSupplier contextProvider,
+                MessageCallback messageCallback,
+                StringToObjectUnmarshaller stringToObjectUnmarshaller,
+                String destinationName,
+                boolean topic,
+                String selector,
+                String consumerName) {
         Objects.requireNonNull(contextProvider, "Context provider cannot be null");
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToObjectUnmarshaller, "Unmarshaller cannot be null");
@@ -138,7 +152,7 @@ public final class JMSConsumer implements AutoCloseable {
      * Setting this limit will automatically set the onUnmarshallFailBehaviour to DISCARD_AFTER_RETRY_COUNT_EXCEEDED
      * if retryLimit is greater than 0, or DISCARD otherwise.
      *
-     * @param retryLimit
+     * @param retryLimit The maximum number of retries
      */
     public void setUnmarshalRetryLimit(int retryLimit) {
         if (retryLimit < 1) {
@@ -149,10 +163,31 @@ public final class JMSConsumer implements AutoCloseable {
         }
     }
 
-
     public void setOnParseFailBehaviour(JMSConsumerBehaviour behaviour) {
         this.onParseFailBehaviour = behaviour;
     }
+
+    public void setOnConsumeFailBehaviour(JMSConsumerBehaviour behaviour) {
+        if (behaviour == DISCARD_AFTER_RETRY_COUNT_EXCEEDED) behaviour = DISCARD;
+
+        this.onConsumeFailBehaviour = behaviour;
+    }
+
+    /**
+     * Setting this limit will automatically set the onConsumeFailBehaviour to DISCARD_AFTER_RETRY_COUNT_EXCEEDED
+     * if retryLimit is greater than 0, or DISCARD otherwise.
+     *
+     * @param retryLimit The maximum number of retries
+     */
+    public void setConsumeRetryLimit(int retryLimit) {
+        if (retryLimit < 1) {
+            this.onConsumeFailBehaviour = DISCARD;
+        } else {
+            this.onConsumeFailBehaviour = DISCARD_AFTER_RETRY_COUNT_EXCEEDED;
+            this.consumeRetryLimit = retryLimit;
+        }
+    }
+
 
     public synchronized void setNoLocal(boolean noLocal) {
         this.noLocal = noLocal;
@@ -301,66 +336,68 @@ public final class JMSConsumer implements AutoCloseable {
         watchdogTimer.stop();
 
         try {
-            String string = null;
-            try {
-                string = parse((TextMessage) message);
-            } catch (Exception e) {
-                switch (onParseFailBehaviour) {
-                    case DISCARD -> {
-                        ackAndCommit(message);
-                        return;
-                    }
-                    case ROLLBACK -> {
-                        log.error("", e);
-                        return;
-                    }
-                }
-            }
+            String string = getStringFromMessage(message);
+            if(Objects.isNull(string)) return;
 
-            String jmsMessageId;
-            try {
-                jmsMessageId = message.getJMSMessageID();
-                if (!Objects.equals(lastParsedJMSMessageId, jmsMessageId)) {
-                    unmarshalTryCount = 0;
-                }
-            } catch (JMSException e) {
-                throw new RuntimeException(e);
-            }
-            lastParsedJMSMessageId = jmsMessageId;
+            handleJmsMessageIdAndTryCount(message);
 
-            Object unmarshalledObject = null;
-            try {
-                unmarshalledObject = unmarshall(string);
-            } catch (Exception e) {
-                switch (onUnmarshallFailBehaviour) {
-                    case DISCARD -> {
-                        ackAndCommit(message);
-                        return;
-                    }
-                    case DISCARD_AFTER_RETRY_COUNT_EXCEEDED -> {
-                        if (unmarshalTryCount > unmarshalRetryLimit) {
-                            ackAndCommit(message);
-                        } else {
-                            log.error("", e);
-                        }
-                        return;
-                    }
-                    case ROLLBACK -> {
-                        log.error("", e);
-                        return;
-                    }
-                }
-            }
+            Object unmarshalledObject = tryUnmarshall(message, string);
+            if(Objects.isNull(unmarshalledObject)) return;
 
-            try {
-                messageCallback.accept(unmarshalledObject);
-                ackAndCommit(message);
-            } catch (Exception e) {
-                log.error("Unhandled exception from consumer callback", e);
-            }
+            invokeCallback(message, unmarshalledObject);
         } finally {
             watchdogTimer.start(10000);
         }
+    }
+
+    private void invokeCallback(Message message, Object unmarshalledObject) {
+        try {
+            messageCallback.accept(unmarshalledObject);
+            consumeTryCount = 0;
+            ackAndCommit(message);
+        } catch (Exception e) {
+            consumeTryCount++;
+            switch (onConsumeFailBehaviour) {
+                case DISCARD -> {
+                    log.warn("Discarding unprocessed object with ID {} due to an unhandled exception from consumer callback", lastParsedJMSMessageId, e);
+                    ackAndCommit(message);
+                }
+                case DISCARD_AFTER_RETRY_COUNT_EXCEEDED -> {
+                    if (consumeTryCount > consumeRetryLimit) {
+                        log.warn("Discarding unprocessed object with ID {} due to an unhandled exception from consumer callback and exceeding the ConsumeRetryLimit", lastParsedJMSMessageId, e);
+                        ackAndCommit(message);
+                    } else {
+                        log.error("Unhandled exception from consumer callback while consuming object with ID {}", lastParsedJMSMessageId, e);
+                    }
+                }
+                case ROLLBACK -> log.error("Unhandled exception from consumer callback while consuming object with ID {}", lastParsedJMSMessageId, e);
+            }
+
+        }
+    }
+
+    private void handleJmsMessageIdAndTryCount(Message message) {
+        String jmsMessageId;
+        try {
+            jmsMessageId = message.getJMSMessageID();
+            if (!Objects.equals(lastParsedJMSMessageId, jmsMessageId)) {
+                unmarshalTryCount = 0;
+                consumeTryCount = 0;
+            }
+        } catch (JMSException e) {
+            throw new RuntimeException(e);
+        }
+        lastParsedJMSMessageId = jmsMessageId;
+    }
+
+    private String getStringFromMessage(Message message) {
+        String string = null;
+        try {
+            string = parse((TextMessage) message);
+        } catch (Exception e) {
+            handleParseFailure(message, e);
+        }
+        return string;
     }
 
     private void ackAndCommit(Message message) {
@@ -370,7 +407,43 @@ public final class JMSConsumer implements AutoCloseable {
                 context.commit();
             }
         } catch (Exception e) {
-            log.error("An exception was thrown while commiting/acknowledging", e);
+            log.error("An exception was thrown while commiting/acknowledging message with ID {}", lastParsedJMSMessageId, e);
+        }
+    }
+
+    private Object tryUnmarshall(Message message, String string) {
+        Object unmarshalledObject = null;
+        try {
+            unmarshalledObject = unmarshall(string);
+            unmarshalTryCount = 0;
+        } catch (Exception e) {
+            unmarshalTryCount++;
+            switch (onUnmarshallFailBehaviour) {
+                case DISCARD -> {
+                    log.warn("Discarding unmarshallable object with ID {} due to", lastParsedJMSMessageId, e);
+                    ackAndCommit(message);
+                }
+                case DISCARD_AFTER_RETRY_COUNT_EXCEEDED -> {
+                    if (unmarshalTryCount > unmarshalRetryLimit) {
+                        log.warn("Discarding unmarshallable object with ID {} due to an exception and exceeding UnmarshalRetryLimit", lastParsedJMSMessageId, e);
+                        ackAndCommit(message);
+                    } else {
+                        log.error("An exception was thrown while unmarshalling object with ID {}", lastParsedJMSMessageId, e);
+                    }
+                }
+                case ROLLBACK -> log.error("An exception was thrown while unmarshalling object with ID {}", lastParsedJMSMessageId, e);
+            }
+        }
+        return unmarshalledObject;
+    }
+
+    private void handleParseFailure(Message message, Exception e) {
+        switch (onParseFailBehaviour) {
+            case DISCARD -> {
+                log.warn("Discarding unparseable object with ID {} due to", lastParsedJMSMessageId, e);
+                ackAndCommit(message);
+            }
+            case ROLLBACK -> log.error("Failed to parse message with ID {} due to", lastParsedJMSMessageId, e);
         }
     }
 }
