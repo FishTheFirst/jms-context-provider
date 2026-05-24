@@ -24,15 +24,17 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class JMSProducerTransactionManagerTest {
-    private JMSProducerTransactionManager jmsProducerTransactionManager;
+    private JMSProducerTransactionManager<String> jmsProducerTransactionManager;
     private JMSConnectionContextHolder connectionContextHolder;
 
     @BeforeEach
     public void setup() {
         connectionContextHolder = Mockito.mock(JMSConnectionContextHolder.class);
-        jmsProducerTransactionManager = new JMSProducerTransactionManager(
+        jmsProducerTransactionManager = new JMSProducerTransactionManager<>(
                 connectionContextHolder,
                 Object::toString,
+                null,
+                null,
                 null,
                 null,
                 "destination",
