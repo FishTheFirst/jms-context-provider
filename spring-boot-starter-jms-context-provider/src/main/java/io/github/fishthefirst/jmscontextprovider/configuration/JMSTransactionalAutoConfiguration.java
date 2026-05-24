@@ -37,6 +37,7 @@ public final class JMSTransactionalAutoConfiguration {
     public JMSConnectionContextHolder jmsConnectionContextHolder(@Lazy ConnectionFactory connectionFactory,
                                                                  @Value("application.jms-context-provider.client-id:jms-provider") String clientId) {
         JMSConnectionContextHolder contextHolder = JMSContextAwareComponentFactory.createContextHolder(connectionFactory);
+        contextHolder.setAllowContextWithoutClientId(false);
         contextHolder.setClientId(clientId);
         return contextHolder;
     }

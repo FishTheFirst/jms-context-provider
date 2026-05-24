@@ -15,9 +15,7 @@ public final class JMSContextAwareComponentFactory {
     }
 
     public static JMSConnectionContextHolder createContextHolder(ConnectionFactory connectionFactory) {
-        JMSConnectionContextHolder jmsConnectionContextHolder = new JMSConnectionContextHolder(connectionFactory);
-        jmsConnectionContextHolder.setAllowContextWithoutClientId(false);
-        return jmsConnectionContextHolder;
+        return new JMSConnectionContextHolder(connectionFactory);
     }
 
     public static <T> JMSConsumer<T> createConsumer(JMSConnectionContextHolder mainContextHolder,
