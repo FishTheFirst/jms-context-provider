@@ -7,4 +7,4 @@ import java.util.function.Consumer;
  * i.e. do not call a method that can generate the exception on the same thread
  */
 @FunctionalInterface
-public interface SendMessageExceptionHandler<T> extends Consumer<T> {}
+public interface SendMessageAbortedHandler<T> extends Consumer<T> {}

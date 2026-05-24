@@ -10,7 +10,11 @@ public final class CustomizableThreadFactory implements ThreadFactory {
     private final String threadNamePrefix;
 
     public static CustomizableThreadFactory getInstance(Object object) {
-        return getInstance(object.getClass().getSimpleName());
+        return getInstance(object.getClass());
+    }
+
+    public static CustomizableThreadFactory getInstance(Class<?> object) {
+        return getInstance(object.getSimpleName());
     }
 
     public static CustomizableThreadFactory getInstance(String threadNamePrefix) {

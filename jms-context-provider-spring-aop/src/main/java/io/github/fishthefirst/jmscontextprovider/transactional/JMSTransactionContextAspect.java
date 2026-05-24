@@ -10,9 +10,9 @@ import org.springframework.stereotype.Component;
 @Aspect
 @Component
 public final class JMSTransactionContextAspect {
-    private final JMSProducerTransactionManager transactionManager;
+    private final JMSProducerTransactionManager<?> transactionManager;
 
-    public JMSTransactionContextAspect(@Lazy JMSProducerTransactionManager transactionManager) {
+    public JMSTransactionContextAspect(@Lazy JMSProducerTransactionManager<?> transactionManager) {
         this.transactionManager = transactionManager;
     }
 

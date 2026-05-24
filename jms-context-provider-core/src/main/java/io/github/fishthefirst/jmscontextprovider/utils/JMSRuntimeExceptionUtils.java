@@ -1,5 +1,6 @@
 package io.github.fishthefirst.jmscontextprovider.utils;
 
+import io.github.fishthefirst.jmscontextprovider.exceptions.ExceptionPointer;
 import jakarta.jms.JMSRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,8 +18,15 @@ public final class JMSRuntimeExceptionUtils {
         tryAndLogError(r, "");
     }
 
+    public static void tryAndLogError(Runnable r, ExceptionPointer exceptionPointer) {
+        tryAndLogError(r, "", exceptionPointer);
+    }
+
     public static void tryAndLogError(Runnable r, String exceptionMessage) {
         tryAndLogError(r, exceptionMessage, noop);
+    }
+    public static void tryAndLogError(Runnable r, String exceptionMessage, ExceptionPointer exceptionPointer) {
+        tryAndLogError(r, exceptionMessage, noop, exceptionPointer);
     }
 
     public static void tryAndLogError(Runnable r, String exceptionMessage, Runnable onException) {
@@ -34,6 +42,23 @@ public final class JMSRuntimeExceptionUtils {
             tryAndLogError(onException);
         }
     }
+
+    public static void tryAndLogError(Runnable r, String exceptionMessage, Runnable onException, ExceptionPointer exceptionPointer) {
+        try {
+            r.run();
+            exceptionPointer.clear();
+        } catch (Exception e) {
+            if(exceptionPointer.shouldLog(e)) {
+                if (e instanceof JMSRuntimeException jmsRuntimeException) {
+                    log.error(exceptionMessage, jmsRuntimeException.getCause());
+                } else {
+                    log.error(exceptionMessage, e);
+                }
+            }
+            tryAndLogError(onException);
+        }
+    }
+
 
     public static <T> void tryAndLogError(T arg, Consumer<T> consumer) {
         tryAndLogError(arg, consumer, "", noop);
@@ -52,6 +77,22 @@ public final class JMSRuntimeExceptionUtils {
             }
             else {
                 log.error(exceptionMessage, e);
+            }
+            onException.run();
+        }
+    }
+
+    public static <T> void tryAndLogError(T arg, Consumer<T> consumer, String exceptionMessage, Runnable onException, ExceptionPointer exceptionPointer) {
+        try {
+            consumer.accept(arg);
+            exceptionPointer.clear();
+        } catch (Exception e) {
+            if(exceptionPointer.shouldLog(e)) {
+                if (e instanceof JMSRuntimeException jmsRuntimeException) {
+                    log.error(exceptionMessage, jmsRuntimeException.getCause());
+                } else {
+                    log.error(exceptionMessage, e);
+                }
             }
             onException.run();
         }

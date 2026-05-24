@@ -1,15 +1,17 @@
 package io.github.fishthefirst.jmscontextprovider.jms;
 
 import io.github.fishthefirst.jmscontextprovider.enums.JMSConsumerBehaviour;
-import io.github.fishthefirst.jmscontextprovider.utils.CustomizableThreadFactory;
-import io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptionUtils;
-import io.github.fishthefirst.jmscontextprovider.utils.WatchdogTimer;
+import io.github.fishthefirst.jmscontextprovider.exceptions.ExceptionPointer;
 import io.github.fishthefirst.jmscontextprovider.handlers.ConsumerStringEventHandler;
 import io.github.fishthefirst.jmscontextprovider.handlers.ConsumerVoidEventHandler;
 import io.github.fishthefirst.jmscontextprovider.handlers.MessageCallback;
 import io.github.fishthefirst.jmscontextprovider.serde.StringToObjectUnmarshaller;
+import io.github.fishthefirst.jmscontextprovider.utils.CustomizableThreadFactory;
+import io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptionUtils;
+import io.github.fishthefirst.jmscontextprovider.utils.WatchdogTimer;
 import jakarta.jms.JMSContext;
 import jakarta.jms.JMSException;
+import jakarta.jms.JMSRuntimeException;
 import jakarta.jms.Message;
 import jakarta.jms.Queue;
 import jakarta.jms.TextMessage;
@@ -29,7 +31,7 @@ import static io.github.fishthefirst.jmscontextprovider.enums.JMSConsumerBehavio
 import static io.github.fishthefirst.jmscontextprovider.enums.JMSConsumerBehaviour.DISCARD_AFTER_RETRY_COUNT_EXCEEDED;
 import static io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
-public final class JMSConsumer implements AutoCloseable {
+public class JMSConsumer<T> implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JMSConsumer.class);
 
     // Atomic refs (w/ Setters)
@@ -43,11 +45,12 @@ public final class JMSConsumer implements AutoCloseable {
     // Init/Watchdog
     private final WatchdogTimer watchdogTimer = new WatchdogTimer(this::onReadTimeout);
     private final ScheduledExecutorService clientCreator = Executors.newSingleThreadScheduledExecutor(CustomizableThreadFactory.getInstance(this));
+    private final ExceptionPointer exceptionPointer = new ExceptionPointer(60000);
 
     // Constructor vars
     private final JMSSessionContextSupplier contextProvider;
-    private final MessageCallback messageCallback;
-    private final StringToObjectUnmarshaller stringToObjectUnmarshaller;
+    private final MessageCallback<T> messageCallback;
+    private final StringToObjectUnmarshaller<T> stringToObjectUnmarshaller;
     private final String destinationName;
     private final boolean topic;
 
@@ -58,6 +61,7 @@ public final class JMSConsumer implements AutoCloseable {
     private int unmarshalRetryLimit;
     private int consumeRetryLimit;
     private int consumeTryCount;
+    private int restartDelay = 1000;
     private String lastParsedJMSMessageId;
 
     // User props
@@ -69,8 +73,8 @@ public final class JMSConsumer implements AutoCloseable {
     private JMSConsumerBehaviour onConsumeFailBehaviour = JMSConsumerBehaviour.ROLLBACK;
 
     JMSConsumer(JMSSessionContextSupplier contextProvider,
-                MessageCallback messageCallback,
-                StringToObjectUnmarshaller stringToObjectUnmarshaller,
+                MessageCallback<T> messageCallback,
+                StringToObjectUnmarshaller<T> stringToObjectUnmarshaller,
                 String destinationName,
                 boolean topic,
                 String consumerName) {
@@ -78,8 +82,8 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     JMSConsumer(JMSSessionContextSupplier contextProvider,
-                MessageCallback messageCallback,
-                StringToObjectUnmarshaller stringToObjectUnmarshaller,
+                MessageCallback<T> messageCallback,
+                StringToObjectUnmarshaller<T> stringToObjectUnmarshaller,
                 String destinationName,
                 boolean topic,
                 String selector,
@@ -88,15 +92,13 @@ public final class JMSConsumer implements AutoCloseable {
         Objects.requireNonNull(messageCallback, "Message callback cannot be null");
         Objects.requireNonNull(stringToObjectUnmarshaller, "Unmarshaller cannot be null");
         Objects.requireNonNull(destinationName, "Destination name cannot be null");
-        if (topic && consumerName.isBlank()) {
-            throw new IllegalArgumentException("Consumer name cannot be null or empty for topic consumers");
-        }
+        this.topic = topic;
+        validateConsumerName(consumerName);
         this.contextProvider = contextProvider;
         this.messageCallback = messageCallback;
         this.stringToObjectUnmarshaller = stringToObjectUnmarshaller;
         this.selector = selector;
         this.destinationName = destinationName;
-        this.topic = topic;
         this.consumerName = consumerName;
     }
 
@@ -126,6 +128,7 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     public synchronized void setConsumerName(String consumerName) {
+        validateConsumerName(consumerName);
         this.consumerName = consumerName;
         if (running.get()) {
             closeConsumer();
@@ -134,12 +137,30 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     public synchronized void setSelectorAndConsumerName(String selector, String consumerName) {
+        validateConsumerName(consumerName);
         this.selector = selector;
         this.consumerName = consumerName;
         if (running.get()) {
             closeConsumer();
             doStart();
         }
+    }
+
+    // Behaviour props
+    public int getRestartDelay() {
+        return restartDelay;
+    }
+
+    /**
+     * The amount of time to delay restarting the consumer after a connection exception is thrown, in milliseconds.
+     *
+     * @param restartDelay
+     */
+    public void setRestartDelay(int restartDelay) {
+        if (restartDelay <= 1000) {
+            throw new IllegalArgumentException("Restart delay cannot be less than 1000 milliseconds");
+        }
+        this.restartDelay = restartDelay;
     }
 
     public void setOnUnmarshallFailBehaviour(JMSConsumerBehaviour behaviour) {
@@ -164,6 +185,8 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     public void setOnParseFailBehaviour(JMSConsumerBehaviour behaviour) {
+        if (behaviour == DISCARD_AFTER_RETRY_COUNT_EXCEEDED) behaviour = DISCARD;
+
         this.onParseFailBehaviour = behaviour;
     }
 
@@ -210,37 +233,36 @@ public final class JMSConsumer implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        stop();
-        if (Objects.nonNull(context)) {
-            tryAndLogError(context::close, "An exception was thrown while closing discarded context");
-        }
-        context = null;
-        consumer = null;
-        watchdogTimer.close();
         clientCreator.shutdownNow();
+        running.set(false);
+        doClose();
+        watchdogTimer.close();
+        onUnmarshallFailEventHandler.set(null);
+        onReadFailEventHandler.set(null);
+        onReadTimeoutEventHandler.set(null);
+        log.info("JMSConsumer {} shut down", consumerName);
     }
 
     // Private controls (do not affect running status flag)
     private synchronized void doStop() {
         watchdogTimer.stop();
         if (Objects.nonNull(context)) {
-            tryAndLogError(context::stop, "An exception was thrown while closing discarded context");
+            log.info("Stopping JMSConsumer {}", consumerName);
+            tryAndLogError(context::stop, "An exception was thrown while stopping consumer");
+            log.info("Stopped JMSConsumer {}", consumerName);
         }
     }
 
     private synchronized void doClose() {
-        doStop();
-        if (Objects.nonNull(context)) {
-            tryAndLogError(context::close, "An exception was thrown while closing discarded context");
-        }
+        closeConsumer();
+        contextProvider.release();
         context = null;
-        consumer = null;
     }
 
     private synchronized void doStart() {
         if (running.get()) {
             if (Objects.isNull(consumer)) {
-                clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
+                clientCreator.schedule(this::tryCreateConsumerLoop, 100, TimeUnit.MILLISECONDS);
             } else if (Objects.nonNull(context)) {
                 tryAndLogError(context::start, "", () -> {
                     doClose();
@@ -251,7 +273,7 @@ public final class JMSConsumer implements AutoCloseable {
     }
 
     // Events
-    private void onException(JMSException exception) {
+    synchronized void onException(JMSException exception) {
         doClose();
         doStart();
     }
@@ -271,19 +293,13 @@ public final class JMSConsumer implements AutoCloseable {
 
     // Create JMS components
     private void createContext() {
-        JMSContextWrapper contextWrapper = Objects.requireNonNull(contextProvider.createContext(this::onException), "Context provider returned null. Exception thrown to bail out.");
-        context = contextWrapper.getContext();
+        context = Objects.requireNonNull(contextProvider.createContext(this::onException), "Context provider returned null. Exception thrown to bail out.");
     }
 
     private synchronized void createConsumer() {
-        doClose();
-        if (Objects.isNull(context)) {
-            createContext();
-        }
+        closeConsumer();
+        createContext();
         if (!topic) {
-            if (Objects.nonNull(selector)) {
-                log.warn("Selector usage for queue is not recommended");
-            }
             Queue destination = context.createQueue(destinationName);
             consumer = context.createConsumer(destination, selector, noLocal);
         } else {
@@ -298,9 +314,10 @@ public final class JMSConsumer implements AutoCloseable {
     private void tryCreateConsumerLoop() {
         if (Objects.isNull(consumer) && running.get()) {
             tryAndLogError(this::createConsumer, "Exception thrown when creating consumer", () -> {
-                doClose();
-                clientCreator.schedule(this::tryCreateConsumerLoop, 1000, TimeUnit.MILLISECONDS);
-            });
+                        doClose();
+                        clientCreator.schedule(this::tryCreateConsumerLoop, restartDelay, TimeUnit.MILLISECONDS);
+                    },
+                    exceptionPointer);
         }
     }
 
@@ -308,13 +325,15 @@ public final class JMSConsumer implements AutoCloseable {
     private synchronized void closeConsumer() {
         doStop();
         if (Objects.nonNull(consumer)) {
-            consumer.close();
-            consumer = null;
+            log.info("Closing JMSConsumer {}", consumerName);
+            tryAndLogError(consumer::close, "An exception was thrown while closing the consumer");
+            log.info("Closed JMSConsumer {}", consumerName);
         }
+        consumer = null;
     }
 
     // Message processing
-    private Object unmarshall(String s) {
+    private T unmarshall(String s) {
         try {
             return stringToObjectUnmarshaller.unmarshal(s);
         } catch (Exception e) {
@@ -337,12 +356,11 @@ public final class JMSConsumer implements AutoCloseable {
 
         try {
             String string = getStringFromMessage(message);
-            if(Objects.isNull(string)) return;
+            if (Objects.isNull(string)) return;
 
             handleJmsMessageIdAndTryCount(message);
 
-            Object unmarshalledObject = tryUnmarshall(message, string);
-            if(Objects.isNull(unmarshalledObject)) return;
+            T unmarshalledObject = tryUnmarshall(message, string);
 
             invokeCallback(message, unmarshalledObject);
         } finally {
@@ -350,9 +368,9 @@ public final class JMSConsumer implements AutoCloseable {
         }
     }
 
-    private void invokeCallback(Message message, Object unmarshalledObject) {
+    private void invokeCallback(Message message, T unmarshalledObject) {
         try {
-            messageCallback.accept(unmarshalledObject);
+            messageCallback.callback(unmarshalledObject);
             consumeTryCount = 0;
             ackAndCommit(message);
         } catch (Exception e) {
@@ -370,9 +388,11 @@ public final class JMSConsumer implements AutoCloseable {
                         log.error("Unhandled exception from consumer callback while consuming object with ID {}", lastParsedJMSMessageId, e);
                     }
                 }
-                case ROLLBACK -> log.error("Unhandled exception from consumer callback while consuming object with ID {}", lastParsedJMSMessageId, e);
+                case ROLLBACK -> {
+                    log.error("Unhandled exception from consumer callback while consuming object with ID {}", lastParsedJMSMessageId, e);
+                    rollback();
+                }
             }
-
         }
     }
 
@@ -411,11 +431,11 @@ public final class JMSConsumer implements AutoCloseable {
         }
     }
 
-    private Object tryUnmarshall(Message message, String string) {
-        Object unmarshalledObject = null;
+    private T tryUnmarshall(Message message, String string) {
         try {
-            unmarshalledObject = unmarshall(string);
+            T unmarshalledObject = unmarshall(string);
             unmarshalTryCount = 0;
+            return unmarshalledObject;
         } catch (Exception e) {
             unmarshalTryCount++;
             switch (onUnmarshallFailBehaviour) {
@@ -431,10 +451,21 @@ public final class JMSConsumer implements AutoCloseable {
                         log.error("An exception was thrown while unmarshalling object with ID {}", lastParsedJMSMessageId, e);
                     }
                 }
-                case ROLLBACK -> log.error("An exception was thrown while unmarshalling object with ID {}", lastParsedJMSMessageId, e);
+                case ROLLBACK -> {
+                    log.error("An exception was thrown while unmarshalling object with ID {}", lastParsedJMSMessageId, e);
+                    rollback();
+                }
             }
+            throw e;
         }
-        return unmarshalledObject;
+    }
+
+    private void rollback() {
+        try {
+            context.recover();
+        } catch (JMSRuntimeException e) {
+            log.error("Failed to recover due to", e);
+        }
     }
 
     private void handleParseFailure(Message message, Exception e) {
@@ -443,7 +474,16 @@ public final class JMSConsumer implements AutoCloseable {
                 log.warn("Discarding unparseable object with ID {} due to", lastParsedJMSMessageId, e);
                 ackAndCommit(message);
             }
-            case ROLLBACK -> log.error("Failed to parse message with ID {} due to", lastParsedJMSMessageId, e);
+            case ROLLBACK -> {
+                log.error("Failed to parse message with ID {} due to", lastParsedJMSMessageId, e);
+                rollback();
+            }
+        }
+    }
+
+    private void validateConsumerName(String consumerName) {
+        if (topic && (Objects.isNull(consumerName) || consumerName.isBlank())) {
+            throw new IllegalArgumentException("Consumer name cannot be null or empty for topic consumers");
         }
     }
 }

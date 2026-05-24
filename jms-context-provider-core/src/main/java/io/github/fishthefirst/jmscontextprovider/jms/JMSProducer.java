@@ -1,6 +1,6 @@
 package io.github.fishthefirst.jmscontextprovider.jms;
 
-import io.github.fishthefirst.jmscontextprovider.serde.MessagePreprocessor;
+import io.github.fishthefirst.jmscontextprovider.serde.MessageProcessor;
 import io.github.fishthefirst.jmscontextprovider.serde.ObjectToStringMarshaller;
 import jakarta.jms.Destination;
 import jakarta.jms.JMSContext;
@@ -11,11 +11,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
 
-public final class JMSProducer {
+public final class JMSProducer<T> {
     private static final Logger log = LoggerFactory.getLogger(JMSProducer.class);
 
-    private final ObjectToStringMarshaller objectToStringMarshaller;
-    private final MessagePreprocessor messagePreprocessor;
+    private final ObjectToStringMarshaller<T> objectToStringMarshaller;
+    private final MessageProcessor<T> messagePreProcessor;
+    private final MessageProcessor<T> messagePostProcessor;
     private final JMSSessionContextSupplier contextSupplier;
 
     private final boolean isTopic;
@@ -28,7 +29,7 @@ public final class JMSProducer {
     private Destination destination;
 
     JMSProducer(JMSSessionContextSupplier contextSupplier,
-                ObjectToStringMarshaller objectToStringMarshaller,
+                ObjectToStringMarshaller<T> objectToStringMarshaller,
                 String destinationName,
                 boolean isTopic,
                 String producerName,
@@ -38,8 +39,20 @@ public final class JMSProducer {
     }
 
     JMSProducer(JMSSessionContextSupplier contextSupplier,
-                ObjectToStringMarshaller objectToStringMarshaller,
-                MessagePreprocessor messagePreprocessor,
+                ObjectToStringMarshaller<T> objectToStringMarshaller,
+                MessageProcessor<T> messagePreProcessor,
+                String destinationName,
+                boolean isTopic,
+                String producerName,
+                int messageTimeToLive,
+                boolean keepAlive) {
+        this(contextSupplier, objectToStringMarshaller, messagePreProcessor, null, destinationName, isTopic, producerName, messageTimeToLive, keepAlive);
+    }
+
+    JMSProducer(JMSSessionContextSupplier contextSupplier,
+                ObjectToStringMarshaller<T> objectToStringMarshaller,
+                MessageProcessor<T> messagePreProcessor,
+                MessageProcessor<T> messagePostProcessor,
                 String destinationName,
                 boolean isTopic,
                 String producerName,
@@ -52,7 +65,8 @@ public final class JMSProducer {
         Objects.requireNonNull(destinationName, "Producer name cannot be null nor blank");
         if(destinationName.isBlank()) throw new IllegalArgumentException("Producer name cannot be null nor blank");
         this.objectToStringMarshaller = objectToStringMarshaller;
-        this.messagePreprocessor = Objects.requireNonNullElseGet(messagePreprocessor, () -> message -> {});
+        this.messagePreProcessor = Objects.requireNonNullElseGet(messagePreProcessor, () -> (message,v) -> {});
+        this.messagePostProcessor = Objects.requireNonNullElseGet(messagePostProcessor, () -> (message,v) -> {});
         this.contextSupplier = contextSupplier;
         this.isTopic = isTopic;
         this.destinationName = destinationName;
@@ -61,26 +75,34 @@ public final class JMSProducer {
         this.keepAlive = keepAlive;
     }
 
-    public synchronized void sendMessage(Object o) {
+    public synchronized void sendMessage(T o) {
         if(Objects.isNull(context)) {
             createProducer();
         }
         TextMessage textMessage = context.createTextMessage(serialize(o));
-        preprocessMessage(textMessage);
+        preprocessMessage(textMessage, o);
         jmsProducer.send(destination, textMessage);
+        postprocessMessage(textMessage, o);
     }
 
-    private void preprocessMessage(TextMessage textMessage) {
+    private void preprocessMessage(TextMessage textMessage, T o) {
         try {
-            messagePreprocessor.accept(textMessage);
+            messagePreProcessor.accept(textMessage, o);
         } catch (Exception e) {
             throw new RuntimeException("Message preprocessor threw an exception", e);
         }
     }
 
+    private void postprocessMessage(TextMessage textMessage, T o) {
+        try {
+            messagePostProcessor.accept(textMessage, o);
+        } catch (Exception e) {
+            throw new RuntimeException("Message postprocessor threw an exception", e);
+        }
+    }
+
     private void createProducer() {
-        JMSContextWrapper contextWrapper = contextSupplier.createContext(this::onException);
-        this.context = contextWrapper.getContext();
+        this.context = contextSupplier.createContext(this::onException);
         this.jmsProducer = context.createProducer();
         if(Objects.nonNull(messageTimeToLive)) {
             this.jmsProducer.setTimeToLive(messageTimeToLive);
@@ -88,7 +110,7 @@ public final class JMSProducer {
         destination = isTopic ? context.createTopic(destinationName) : context.createQueue(destinationName);
     }
 
-    private String serialize(Object o) {
+    private String serialize(T o) {
         try {
             return Objects.requireNonNull(objectToStringMarshaller.marshal(o), "Serializer returned null");
         } catch (Exception e) {

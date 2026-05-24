@@ -1,8 +1,9 @@
 package io.github.fishthefirst.jmscontextprovider.jms;
 
 
+import io.github.fishthefirst.jmscontextprovider.handlers.SendMessageAbortedHandler;
 import io.github.fishthefirst.jmscontextprovider.handlers.SendMessageExceptionHandler;
-import io.github.fishthefirst.jmscontextprovider.serde.MessagePreprocessor;
+import io.github.fishthefirst.jmscontextprovider.serde.MessageProcessor;
 import io.github.fishthefirst.jmscontextprovider.serde.ObjectToStringMarshaller;
 import io.github.fishthefirst.jmscontextprovider.utils.CustomizableThreadFactory;
 import jakarta.jms.JMSContext;
@@ -17,45 +18,53 @@ import java.util.Optional;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
-public final class JMSProducerTransactionManager {
+public final class JMSProducerTransactionManager<T> {
     private static final Logger log = LoggerFactory.getLogger(JMSProducerTransactionManager.class);
-    private static final AtomicInteger transactionId = new AtomicInteger(0);
-
+    private static final AtomicLong transactionId = new AtomicLong(0);
     private final ThreadLocal<Boolean> isTransacted = new ThreadLocal<>();
-    private final ThreadLocal<JMSProducer> transactionProducer = new ThreadLocal<>();
-    private final ThreadLocal<List<Object>> transactedMessages = new ThreadLocal<>();
+    private final ThreadLocal<JMSProducer<T>> transactionProducer = new ThreadLocal<>();
+    private final ThreadLocal<List<T>> transactedMessages = new ThreadLocal<>();
     private final ThreadLocal<Boolean> transactionAlreadyFailed = new ThreadLocal<>();
 
     private final JMSConnectionContextHolder connectionContextHolder;
-    private final ObjectToStringMarshaller messageToStringMarshaller;
-    private final SendMessageExceptionHandler sendMessageExceptionHandler;
-    private final MessagePreprocessor messagePreprocessor;
+    private final ObjectToStringMarshaller<T> messageToStringMarshaller;
+    private final SendMessageExceptionHandler<T> sendMessageExceptionHandler;
+    private final SendMessageAbortedHandler<T> sendMessageAbortedHandler;
+    private final MessageProcessor<T> messagePreProcessor;
+    private final MessageProcessor<T> messagePostProcessor;
+
+    public String getDestinationName() {
+        return destinationName;
+    }
+
     private final String destinationName;
     private final boolean topic;
 
     private final ThreadPoolExecutor executor;
 
     public JMSProducerTransactionManager(JMSConnectionContextHolder connectionContextHolder,
-                                         ObjectToStringMarshaller messageToStringMarshaller,
-                                         SendMessageExceptionHandler sendMessageExceptionHandler,
-                                         MessagePreprocessor messagePreprocessor,
+                                         ObjectToStringMarshaller<T> messageToStringMarshaller,
+                                         SendMessageExceptionHandler<T> sendMessageExceptionHandler,
+                                         SendMessageAbortedHandler<T> sendMessageAbortedHandler,
+                                         MessageProcessor<T> messagePreProcessor,
+                                         MessageProcessor<T> messagePostProcessor,
                                          String destinationName,
                                          boolean topic) {
+
         Objects.requireNonNull(connectionContextHolder, "JMS Connection Context Holder cannot be null");
-        Objects.requireNonNull(connectionContextHolder, "Object to String Marshaller cannot be null");
-        Objects.requireNonNull(connectionContextHolder, "JMS Connection Context Holder cannot be null");
+        Objects.requireNonNull(messageToStringMarshaller, "Object to String Marshaller cannot be null");
 
         this.connectionContextHolder = connectionContextHolder;
         this.messageToStringMarshaller = messageToStringMarshaller;
-        this.sendMessageExceptionHandler = Objects.requireNonNullElseGet(sendMessageExceptionHandler,
-                () -> (message) -> {
-                });
-        this.messagePreprocessor = messagePreprocessor;
+        this.sendMessageExceptionHandler = Objects.requireNonNullElseGet(sendMessageExceptionHandler, () -> (message) -> {});
+        this.sendMessageAbortedHandler = Objects.requireNonNullElseGet(sendMessageAbortedHandler, () -> (message) -> {});
+        this.messagePreProcessor = messagePreProcessor;
+        this.messagePostProcessor = messagePostProcessor;
         this.destinationName = destinationName;
         this.topic = topic;
         // TODO How to enable executor configuration
@@ -76,9 +85,9 @@ public final class JMSProducerTransactionManager {
         }
     }
 
-    public void sendObjectsTransacted(Iterable<Object> objects) {
+    public void sendObjectsTransacted(Iterable<T> objects) {
         startTransaction();
-        Iterator<Object> iterator = objects.iterator();
+        Iterator<T> iterator = objects.iterator();
         while (!hasTransactionFailed() && iterator.hasNext()) {
             sendObject(iterator.next());
         }
@@ -91,16 +100,16 @@ public final class JMSProducerTransactionManager {
         }
     }
 
-    public void sendObject(Object object) {
+    public void sendObject(T object) {
         boolean transactionOpen = isTransactionOpen();
-        List<Object> transactedMessagesList = transactedMessages.get();
+        List<T> transactedMessagesList = transactedMessages.get();
 
         if(transactionOpen && (hasTransactionFailed() || (!transactedMessagesList.isEmpty() && !isProducerAlive()))) {
             messageFailedCallback(object);
             return;
         }
 
-        JMSProducer jmsProducer = getProducerForMessage();
+        JMSProducer<T> jmsProducer = getProducerForMessage();
         try {
             jmsProducer.sendMessage(object);
             if (transactionOpen) {
@@ -133,8 +142,12 @@ public final class JMSProducerTransactionManager {
 
     public void commitAsync() {
         try {
+            JMSProducer<T> jmsProducer = transactionProducer.get();
+            List<T> transactedMessagesList = transactedMessages.get();
+            Boolean isTransactedC = isTransacted.get();
+            Boolean hasTransactionFailed = transactionAlreadyFailed.get();
             executor.submit(() -> {
-                setContext(transactionProducer.get(), transactedMessages.get(), isTransacted.get(), transactionAlreadyFailed.get());
+                setThreadLocals(jmsProducer, transactedMessagesList, isTransactedC, hasTransactionFailed);
                 commit();
             });
         } finally {
@@ -148,31 +161,61 @@ public final class JMSProducerTransactionManager {
         Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback));
     }
 
-    private void setContext(JMSProducer producer,
-                            List<Object> transactedMessages,
-                            Boolean isTransacted,
-                            Boolean hasTransactionFailed) {
+    public void abort() {
+        tryCatch(JMSProducer::rollback, "rolling back");
+        Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageAbortedCallback));
+    }
+
+    private void setThreadLocals(JMSProducer<T> producer,
+                                 List<T> transactedMessages,
+                                 Boolean isTransacted,
+                                 Boolean hasTransactionFailed) {
         this.transactionProducer.set(producer);
         this.transactedMessages.set(transactedMessages);
         this.isTransacted.set(isTransacted);
         this.transactionAlreadyFailed.set(hasTransactionFailed);
     }
 
-    private JMSProducer getProducerForMessage() {
-        JMSProducer producer = Optional.ofNullable(transactionProducer.get()).orElseGet(() -> JMSContextAwareComponentFactory.createProducer(connectionContextHolder, messageToStringMarshaller, messagePreprocessor, destinationName, topic, "transacted-producer-" + transactionId.getAndIncrement(), isTransactionOpen() ? JMSContext.SESSION_TRANSACTED : JMSContext.AUTO_ACKNOWLEDGE, false));
+    private JMSProducer<T> getProducerForMessage() {
+        JMSProducer<T> producer = Optional
+                .ofNullable(transactionProducer.get())
+                .orElseGet(() ->
+                        JMSContextAwareComponentFactory
+                                .createProducer(
+                                        connectionContextHolder,
+                                        messageToStringMarshaller,
+                                        messagePreProcessor,
+                                        messagePostProcessor,
+                                        destinationName,
+                                        topic,
+                                        "transacted-producer-" + transactionId.getAndIncrement(),
+                                        isTransactionOpen() ?
+                                                JMSContext.SESSION_TRANSACTED : JMSContext.AUTO_ACKNOWLEDGE,
+                                        false));
         transactionProducer.set(producer);
         return producer;
     }
 
-    private void tryCatch(Consumer<JMSProducer> producerMethod, String action) {
-        tryAndLogError(() -> Optional.ofNullable(transactionProducer.get()).ifPresent(producerMethod), "An exception was thrown while" + action, () -> Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback)));
+    private void tryCatch(Consumer<JMSProducer<T>> producerMethod, String action) {
+        tryAndLogError(() -> Optional
+                        .ofNullable(transactionProducer.get())
+                        .ifPresent(producerMethod), "An exception was thrown while " + action,
+                () -> Optional.ofNullable(transactedMessages.get()).ifPresent(list -> list.forEach(this::messageFailedCallback)));
     }
 
-    private void messageFailedCallback(Object failedMessage) {
+    private void messageFailedCallback(T failedMessage) {
         try {
             sendMessageExceptionHandler.accept(failedMessage);
         } catch (Exception sendMessageExceptionHandlerException) {
             log.error("Send Message Exception Handler threw an exception", sendMessageExceptionHandlerException);
+        }
+    }
+
+    private void messageAbortedCallback(T abortedMessage) {
+        try {
+            sendMessageAbortedHandler.accept(abortedMessage);
+        } catch (Exception messageAbortedHandlerException) {
+            log.error("Message Aborted Handler threw an exception", messageAbortedHandlerException);
         }
     }
 

@@ -3,11 +3,12 @@ package io.github.fishthefirst.jmscontextprovider.configuration;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.fishthefirst.jmscontextprovider.data.MessageWithMetadata;
+import io.github.fishthefirst.jmscontextprovider.handlers.SendMessageAbortedHandler;
 import io.github.fishthefirst.jmscontextprovider.handlers.SendMessageExceptionHandler;
 import io.github.fishthefirst.jmscontextprovider.jms.JMSConnectionContextHolder;
 import io.github.fishthefirst.jmscontextprovider.jms.JMSContextAwareComponentFactory;
 import io.github.fishthefirst.jmscontextprovider.jms.JMSProducerTransactionManager;
-import io.github.fishthefirst.jmscontextprovider.serde.MessagePreprocessor;
+import io.github.fishthefirst.jmscontextprovider.serde.MessageProcessor;
 import io.github.fishthefirst.jmscontextprovider.serde.MessageWithMetadataMarshaller;
 import io.github.fishthefirst.jmscontextprovider.serde.ObjectToStringMarshaller;
 import io.github.fishthefirst.jmscontextprovider.serde.StringToObjectUnmarshaller;
@@ -23,7 +24,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 
-import java.util.Objects;
+import java.time.Instant;
 
 @ConditionalOnClass({JMSTransactionContextAspect.class, JMSConnectionContextHolder.class, JMSProducerTransactionManager.class, ConnectionFactory.class})
 @AutoConfigurationPackage
@@ -34,9 +35,8 @@ public final class JMSTransactionalAutoConfiguration {
     @ConditionalOnMissingBean(JMSConnectionContextHolder.class)
     @ConditionalOnBean({ConnectionFactory.class, SessionModeSupplier.class})
     public JMSConnectionContextHolder jmsConnectionContextHolder(@Lazy ConnectionFactory connectionFactory,
-                                                                 SessionModeSupplier sessionModeSupplier,
                                                                  @Value("application.jms-context-provider.client-id:jms-provider") String clientId) {
-        JMSConnectionContextHolder contextHolder = JMSContextAwareComponentFactory.createContextHolder(connectionFactory, sessionModeSupplier.sessionMode());
+        JMSConnectionContextHolder contextHolder = JMSContextAwareComponentFactory.createContextHolder(connectionFactory);
         contextHolder.setClientId(clientId);
         return contextHolder;
     }
@@ -44,29 +44,36 @@ public final class JMSTransactionalAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(JMSProducerTransactionManager.class)
     @ConditionalOnBean({ObjectToStringMarshaller.class, JMSConnectionContextHolder.class})
-    public JMSProducerTransactionManager jmsProducerTransactionManager(@Lazy JMSConnectionContextHolder connectionContextHolder,
-                                                                       @Lazy ObjectToStringMarshaller messageToStringMarshaller,
-                                                                       @Nullable SendMessageExceptionHandler sendMessageExceptionHandler,
-                                                                       @Nullable MessagePreprocessor messagePreprocessor,
+    public <T> JMSProducerTransactionManager<T> jmsProducerTransactionManager(@Lazy JMSConnectionContextHolder connectionContextHolder,
+                                                                       @Lazy ObjectToStringMarshaller<T> messageToStringMarshaller,
+                                                                       @Nullable SendMessageExceptionHandler<T> sendMessageExceptionHandler,
+                                                                       @Nullable SendMessageAbortedHandler<T> sendMessageAbortedHandler,
+                                                                       @Nullable MessageProcessor<T> messagePreProcessor,
+                                                                       @Nullable MessageProcessor<T> messagePostProcessor,
                                                                        @Value("application.jms-context-provider.destination-name") String destinationName,
                                                                        @Value("application.jms-context-provider.topic:false") boolean topic) {
-        return new JMSProducerTransactionManager(connectionContextHolder, messageToStringMarshaller, Objects.requireNonNullElse(sendMessageExceptionHandler, (message) -> {
-        }), Objects.requireNonNullElse(messagePreprocessor, message -> {
-        }), destinationName, topic);
+        return new JMSProducerTransactionManager<>(connectionContextHolder,
+                messageToStringMarshaller,
+                sendMessageExceptionHandler,
+                sendMessageAbortedHandler,
+                messagePreProcessor,
+                messagePostProcessor,
+                destinationName,
+                topic);
     }
 
     @Bean
     @ConditionalOnMissingBean(JMSTransactionContextAspect.class)
-    public JMSTransactionContextAspect jmsTransactionContextAspect(@Lazy JMSProducerTransactionManager transactionManager) {
+    public JMSTransactionContextAspect jmsTransactionContextAspect(@Lazy JMSProducerTransactionManager<?> transactionManager) {
         return new JMSTransactionContextAspect(transactionManager);
     }
 
     @Bean
     @ConditionalOnMissingBean(ObjectToStringMarshaller.class)
-    public ObjectToStringMarshaller objectToStringMarshaller(@Lazy ObjectMapper objectMapper) {
-        return new MessageWithMetadataMarshaller((o) -> {
+    public ObjectToStringMarshaller<?> objectToStringMarshaller(@Lazy ObjectMapper objectMapper) {
+        return new MessageWithMetadataMarshaller<>((o) -> {
             try {
-                return objectMapper.writeValueAsString(o);
+                return new MessageWithMetadata(Instant.now(), objectMapper.writeValueAsString(o), o.getClass().getName()).toStringPayload();
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
@@ -75,7 +82,7 @@ public final class JMSTransactionalAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(StringToObjectUnmarshaller.class)
-    public StringToObjectUnmarshaller stringToObjectUnmarshaller(@Lazy ObjectMapper objectMapper) {
+    public StringToObjectUnmarshaller<?> stringToObjectUnmarshaller(@Lazy ObjectMapper objectMapper) {
         return (s) -> {
             MessageWithMetadata message = new MessageWithMetadata(s);
             try {

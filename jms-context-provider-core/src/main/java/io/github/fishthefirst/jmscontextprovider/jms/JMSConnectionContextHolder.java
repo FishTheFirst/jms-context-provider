@@ -1,5 +1,6 @@
 package io.github.fishthefirst.jmscontextprovider.jms;
 
+import io.github.fishthefirst.jmscontextprovider.exceptions.ExceptionPointer;
 import jakarta.jms.ConnectionFactory;
 import jakarta.jms.ExceptionListener;
 import jakarta.jms.JMSContext;
@@ -13,12 +14,12 @@ import java.util.Objects;
 
 import static io.github.fishthefirst.jmscontextprovider.utils.JMSRuntimeExceptionUtils.tryAndLogError;
 
-public final class JMSConnectionContextHolder implements AutoCloseable {
+public class JMSConnectionContextHolder implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JMSConnectionContextHolder.class);
 
     // Constructor vars
-    private final int sessionMode;
     private final ConnectionFactory connectionFactory;
+    private final ExceptionPointer exceptionPointer = new ExceptionPointer(60000);
 
     // Object vars
     private List<JMSContextWrapper> providedContexts = new ArrayList<>();
@@ -28,39 +29,55 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
 
     // User props
     private String clientId;
+    private boolean allowContextWithoutClientId = true;
 
-    JMSConnectionContextHolder(ConnectionFactory connectionFactory, int sessionMode) {
+    JMSConnectionContextHolder(ConnectionFactory connectionFactory) {
         Objects.requireNonNull(connectionFactory, "Connection factory cannot be null");
         this.connectionFactory = connectionFactory;
-        this.sessionMode = sessionMode;
     }
 
     // User props setters
     public synchronized void setClientId(String clientId) {
+        if(Objects.equals(this.clientId, clientId)) {
+            if (Objects.nonNull(context)) {
+                log.warn("Tried setting client ID to the already set value: \"{}\". Ignoring.", clientId);
+            }
+            return;
+        }
+        if(!allowContextWithoutClientId && (Objects.isNull(clientId) || clientId.isBlank())) {
+            throw new IllegalArgumentException("Cannot set null/blank client ID: allowContextWithoutClientId is false.");
+        }
         this.clientId = clientId;
         if (Objects.nonNull(context)) {
             onException(new JMSException("Client ID Changed", "", new Exception("Client ID Changed")));
         }
     }
 
+    public synchronized void setAllowContextWithoutClientId(boolean allow) {
+        if(!allow && Objects.nonNull(context) && (Objects.isNull(this.clientId) || this.clientId.isBlank())) {
+            throw new IllegalStateException("Cannot set allowContextWithoutClientId to false while while client ID is not set");
+        }
+        allowContextWithoutClientId = allow;
+    }
+
     // Context Controls
     @Override
     public synchronized void close() {
-        if (Objects.nonNull(context)) {
-            tryAndLogError(context::close);
-        }
-        context = null;
-        List<JMSContextWrapper> copy = List.copyOf(providedContexts);
-        providedContexts = new ArrayList<>();
-        for (JMSContextWrapper providedContext : copy) {
+        for (JMSContextWrapper providedContext : providedContexts) {
             tryAndLogError(() -> providedContext.onException(new JMSException("Connection closing")));
         }
+        providedContexts = new ArrayList<>();
+
+        if (Objects.nonNull(context)) {
+            log.info("Closing connection {}", clientId);
+            tryAndLogError(context::close);
+            log.info("Closed connection {}", clientId);
+        }
+        context = null;
+        log.info("Connection context for client {} closed", clientId);
     }
 
     // JMS Context Methods
-    int getSessionMode() {
-        return sessionMode;
-    }
 
     synchronized JMSContextWrapper createContext(int sessionMode, ExceptionListener exceptionListener) {
         if (Objects.isNull(context)) {
@@ -73,9 +90,12 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
 
     private void buildAndAssignContext() {
         try {
+            if (Objects.isNull(clientId) && !allowContextWithoutClientId) {
+                throw new NullPointerException("Client ID not set and allowContextWithoutClientId is false");
+            }
             // This protects connection factory methods from blowing up from multiple connection holders
             synchronized (connectionFactory) {
-                context = connectionFactory.createContext(sessionMode);
+                context = connectionFactory.createContext();
             }
             context.setClientID(clientId);
             context.setExceptionListener(this::onException);
@@ -84,17 +104,18 @@ public final class JMSConnectionContextHolder implements AutoCloseable {
             } else {
                 log.warn("Connection Context built without client ID");
             }
+            exceptionPointer.clear();
         } catch (Exception e) {
             context = null;
-            log.error("Failed to build Main Context");
+            if(exceptionPointer.shouldLog(e)) {
+                log.error("Failed to build Main Context");
+            }
             throw e;
         }
     }
 
-    private synchronized void onException(JMSException exception) {
+    synchronized void onException(JMSException exception) {
         log.error("Connection Context expired: {}", exception.getMessage());
-        List<JMSContextWrapper> copyOfWrappers = List.copyOf(providedContexts);
         close();
-        copyOfWrappers.forEach(jmsContextWrapper -> jmsContextWrapper.onException(exception));
     }
 }
